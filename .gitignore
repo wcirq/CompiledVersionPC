@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Build artifacts
+build/
+dist/
+dist_binary/
+*.so
+
+# Runtime caches
+embedding_cache/
+*.tmp
+
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+
+# Generated outputs
+output/
+output_batch/
+
+# Local datasets and test assets
+templates/
+test_imgs/
