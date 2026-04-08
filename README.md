@@ -313,25 +313,25 @@ python main.py -h
 训练：
 
 ```bash
-python main.py train --train_dir /path/to/train_images --save_model memory_model.pt
+python main.py train --train_dir templates --save_model memory_model.pt
 ```
 
 单图检测：
 
 ```bash
-python main.py detect --model_path memory_model.pt --input /path/to/test.jpg --output ./output
+python main.py detect --model_path memory_model.pt --input ./test_imgs/1.jpg --output ./output
 ```
 
 批量检测：
 
 ```bash
-python main.py detect_batch --model_path memory_model.pt --input /path/to/test_dir --output ./output_batch
+python main.py detect_batch --model_path memory_model.pt --input ./test_imgs --output ./output_batch
 ```
 
 阈值标定：
 
 ```bash
-python main.py calibrate_threshold --model_path memory_model.pt --input /path/to/val_normal_images
+python main.py calibrate_threshold --model_path memory_model.pt --input test_imgs
 ```
 
 编译：

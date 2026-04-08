@@ -11,11 +11,13 @@ dist_binary/
 # Runtime caches
 embedding_cache/
 *.tmp
+.codex
 
 # Model artifacts
 *.pt
 *.pth
 *.ckpt
+*.zip
 
 # Generated outputs
 output/
