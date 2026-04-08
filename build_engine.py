@@ -1,4 +1,5 @@
 import argparse
+import platform
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,12 @@ ROOT = Path(__file__).resolve().parent
 BUILD_DIR = ROOT / "build"
 DIST_DIR = ROOT / "dist_binary"
 SETUP_FILE = ROOT / "setup_binary.py"
+ARCH_ALIASES = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "arm64": "aarch64",
+    "aarch64": "aarch64",
+}
 
 
 def remove_path(path: Path):
@@ -38,9 +45,32 @@ def cleanup_engine_binaries():
             remove_path(binary)
 
 
-def collect_binaries():
+def normalize_arch(name: str) -> str:
+    value = ARCH_ALIASES.get(str(name).strip().lower())
+    if value is None:
+        supported = ", ".join(sorted(ARCH_ALIASES))
+        raise SystemExit(f"Unsupported target arch: {name!r}. Supported values: {supported}")
+    return value
+
+
+def get_host_arch() -> str:
+    return normalize_arch(platform.machine())
+
+
+def ensure_buildable_target(target_arch: str):
+    host_arch = get_host_arch()
+    if target_arch != host_arch:
+        raise SystemExit(
+            "Cross-architecture compilation is not handled by this script directly. "
+            f"Host arch is {host_arch}, requested target arch is {target_arch}. "
+            "Use a matching native environment or an arm64/x86_64 container/toolchain first, "
+            "then run this script inside that target environment."
+        )
+
+
+def collect_binaries(target_arch: str):
     DIST_DIR.mkdir(parents=True, exist_ok=True)
-    target_engine = DIST_DIR / "engine"
+    target_engine = DIST_DIR / target_arch / "engine"
     target_engine.mkdir(parents=True, exist_ok=True)
 
     copied = []
@@ -72,17 +102,24 @@ def main():
     parser = argparse.ArgumentParser(description="Build binary extensions for engine package only.")
     parser.add_argument("--clean", action="store_true", help="remove old build artifacts before building")
     parser.add_argument(
+        "--target-arch",
+        default=get_host_arch(),
+        help="target CPU architecture: x86_64, arm64, or aarch64 (arm64 is normalized to aarch64)",
+    )
+    parser.add_argument(
         "--keep-generated-c",
         action="store_true",
         help="keep generated C files after build",
     )
     args = parser.parse_args()
+    target_arch = normalize_arch(args.target_arch)
+    ensure_buildable_target(target_arch)
 
     if args.clean:
         clean_artifacts()
 
     run_build()
-    copied = collect_binaries()
+    copied = collect_binaries(target_arch)
     cleanup_engine_binaries()
 
     if not args.keep_generated_c:
@@ -90,6 +127,7 @@ def main():
             remove_path(c_file)
 
     print("Build finished.")
+    print(f"Target arch: {target_arch}")
     print("Binary output:")
     for item in copied:
         print(item)

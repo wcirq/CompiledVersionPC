@@ -199,15 +199,85 @@ python build_engine.py --clean
 - 清理旧的 `build/` 和 `dist_binary/`
 - 编译 `engine/` 下的 Python 模块
 - 在原地生成二进制扩展
-- 把结果收集到 `dist_binary/engine/`
+- 把结果收集到 `dist_binary/<target-arch>/engine/`
 - 默认删除编译生成的 `.c` 中间文件
+
+也可以显式指定目标架构：
+
+```bash
+python build_engine.py --clean --target-arch x86_64
+python build_engine.py --clean --target-arch arm64
+python build_engine.py --clean --target-arch aarch64
+```
+
+说明：
+
+- `arm64` 会被统一映射成 `aarch64`
+- 当前脚本不会直接完成真正的跨架构交叉编译
+- 如果 `--target-arch` 和当前构建环境架构不一致，脚本会直接报错并提示你改用目标架构环境或对应容器
+
+如果你当前宿主机是 `x86_64`，但需要构建 `aarch64/arm64` 的 `.so`，推荐做法是在 `linux/arm64` 容器里执行构建。
+
+先拉取 Python 3.10 的 ARM64 基础镜像：
+
+```bash
+docker pull --platform linux/arm64 arm64v8/python:3.10-bookworm
+```
+
+如果第一次运行 ARM64 容器时出现下面这种错误：
+
+```text
+exec /usr/bin/bash: exec format error
+```
+
+说明宿主机还没有启用 ARM64 二进制模拟，需要先安装 `binfmt/qemu`：
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+docker buildx inspect --bootstrap
+```
+
+然后再启动 ARM64 容器：
+
+已有容器
+````
+docker commit arm_build_env my_arm_env:1.0
+docker run -it \
+  --name new_env \
+  -v /media/wcirq/data1/develop/big_model/CompiledVersionPC:/workspace \
+  -w /workspace \
+  my_arm_env:1.0 \
+  bash
+````
+
+新容器
+```bash
+docker run --rm -it --platform linux/arm64 \
+  -v /media/wcirq/data1/develop/big_model/CompiledVersionPC:/work \
+  -w /work \
+  arm64v8/python:3.10-bookworm bash
+
+apt update
+apt install -y libgl1 libglib2.0-0
+pip install cython setuptools
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu || true
+pip install opencv-python scikit-learn tqdm pillow
+
+```
+
+进入容器后执行：
+
+```bash
+pip install cython setuptools
+python build_engine.py --clean --target-arch aarch64
+```
 
 ### 3. 编译输出位置
 
 编译完成后，二进制文件会放到：
 
 ```text
-./dist_binary/engine/
+./dist_binary/<target-arch>/engine/
 ```
 
 常见结果：
@@ -217,7 +287,7 @@ python build_engine.py --clean
 
 同时会保留：
 
-- `dist_binary/engine/__init__.py`
+- `dist_binary/<target-arch>/engine/__init__.py`
 
 ### 4. 保留中间生成的 C 文件
 
@@ -246,8 +316,8 @@ python main.py detect --model_path memory_model.pt --input /path/to/test.jpg
 把这些文件一起带走：
 
 - `main.py`
-- `dist_binary/engine/__init__.py`
-- `dist_binary/engine/*.so` 或 `dist_binary/engine/*.pyd`
+- `dist_binary/<target-arch>/engine/__init__.py`
+- `dist_binary/<target-arch>/engine/*.so` 或 `dist_binary/<target-arch>/engine/*.pyd`
 
 然后把运行环境里的导入路径指向 `dist_binary`。
 
