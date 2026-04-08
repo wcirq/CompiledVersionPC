@@ -1,0 +1,19 @@
+# Runtime
+numpy
+opencv-python
+Pillow
+scikit-learn
+torch
+torchvision
+tqdm
+
+# Build
+Cython
+setuptools
+wheel
+
+# Optional
+# faiss-cpu
+
+# Notes
+# tkinter is provided by the Python installation / OS packages, not pip.

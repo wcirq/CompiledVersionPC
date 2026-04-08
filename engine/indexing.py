@@ -1,20 +1,11 @@
 from typing import Optional, Tuple
 
-try:
-    import numpy as np
-    import torch
-    from sklearn.neighbors import NearestNeighbors
-except Exception as exc:
-    from .debug_utils import print_exception_details
-
-    print_exception_details(exc, context="engine.indexing import failed")
-    raise
-
-from .debug_utils import guarded, print_exception_details
+import numpy as np
+import torch
+from sklearn.neighbors import NearestNeighbors
 
 
 class MemoryIndex:
-    @guarded("MemoryIndex.__init__ failed")
     def __init__(
         self,
         backend: str = "auto",
@@ -30,7 +21,6 @@ class MemoryIndex:
         self.sklearn_index = None
         self.faiss_index = None
 
-    @guarded("MemoryIndex._resolve_backend failed")
     def _resolve_backend(self) -> str:
         if self.backend != "auto":
             return self.backend
@@ -38,7 +28,6 @@ class MemoryIndex:
             return "torch"
         return "sklearn"
 
-    @guarded("MemoryIndex.fit failed")
     def fit(self, memory_bank: torch.Tensor):
         if memory_bank is None or memory_bank.ndim != 2 or memory_bank.shape[0] == 0:
             raise ValueError("Invalid memory bank.")
@@ -63,7 +52,6 @@ class MemoryIndex:
                 self.sklearn_index = None
                 return
             except Exception as exc:
-                print_exception_details(exc, context="MemoryIndex.fit faiss backend unavailable")
                 print(f"[WARN] faiss backend unavailable, fallback to sklearn: {exc}")
 
         self.sklearn_index = NearestNeighbors(
@@ -76,7 +64,6 @@ class MemoryIndex:
         self.faiss_index = None
 
     @torch.no_grad()
-    @guarded("MemoryIndex.kneighbors failed")
     def kneighbors(self, queries: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
         backend = self._resolve_backend()
 
@@ -95,7 +82,6 @@ class MemoryIndex:
         return distances.astype(np.float32), inds.astype(np.int64)
 
     @torch.no_grad()
-    @guarded("MemoryIndex._kneighbors_torch failed")
     def _kneighbors_torch(self, queries: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
         if self.memory_bank_torch is None:
             raise ValueError("Torch backend not initialized.")

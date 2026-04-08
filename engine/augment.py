@@ -1,13 +1,7 @@
 from typing import Tuple
 
-try:
-    import cv2
-    import numpy as np
-except Exception as exc:
-    from .debug_utils import print_exception_details
-
-    print_exception_details(exc, context="engine.augment import failed")
-    raise
+import cv2
+import numpy as np
 
 
 def vertical_flip(image_rgb: np.ndarray) -> np.ndarray:

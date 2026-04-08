@@ -10,76 +10,187 @@ from engine.utils import ensure_dir, list_images, parse_float_tuple2, parse_tupl
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Memory-based visual anomaly tool")
-    parser.add_argument("mode", choices=["train", "detect", "detect_batch", "calibrate_threshold", "append_positive"])
+    parser = argparse.ArgumentParser(description="基于记忆库的视觉异常检测工具")
 
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--backbone", type=str, default="resnet50")
-    parser.add_argument("--input_size", type=int, nargs=2, default=[240, 240])
-    parser.add_argument("--crop_size", type=int, nargs=2, default=[160, 160])
-    parser.add_argument("--stride", type=int, nargs=2, default=None)
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--detect_batch_size", type=int, default=8)
-    parser.add_argument("--local_kernel", type=int, default=3)
-    parser.add_argument("--memory_ratio", type=float, default=0.002)
-    parser.add_argument("--target_embed_dimension", type=int, default=1024)
-    parser.add_argument("--knn_neighbors", type=int, default=1)
-    parser.add_argument("--knn_backend", type=str, default="auto", choices=["auto", "torch", "sklearn", "faiss"])
-    parser.add_argument("--knn_query_chunk_size", type=int, default=8192)
-    parser.add_argument("--use_amp", action="store_true")
-    parser.add_argument("--infer_long_side", type=int, default=0)
+    # 运行模式说明：
+    # train：使用正常样本构建记忆库
+    # detect：对单张图片做异常检测
+    # detect_batch：对目录中的所有图片做批量检测
+    # calibrate_threshold：用一批正常图像估计推荐阈值
+    # append_positive：向已有记忆库追加新的正样本特征
+    parser.add_argument(
+        "mode",
+        choices=["train", "detect", "detect_batch", "calibrate_threshold", "append_positive"],
+        help="运行模式：train / detect / detect_batch / calibrate_threshold / append_positive",
+    )
 
-    parser.add_argument("--train_dir", type=str)
-    parser.add_argument("--save_model", type=str, default="memory_model.pt")
-    parser.add_argument("--model_path", type=str, default="memory_model.pt")
-    parser.add_argument("--input", type=str)
-    parser.add_argument("--output", type=str)
-    parser.add_argument("--threshold", type=float, default=1.0)
-    parser.add_argument("--quantile", type=float, default=0.99)
-    parser.add_argument("--select_roi", action="store_true")
-    parser.add_argument("--heatmap_std_scale", type=float, default=3.0)
-    parser.add_argument("--heatmap_quantile", type=float, default=0.999)
-    parser.add_argument("--max_heatmap_samples", type=int, default=2_000_000)
-    parser.add_argument("--heatmap_zero_below_threshold", action="store_true")
+    # 特征提取和检索所使用的设备，默认优先使用 CUDA。
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="运行设备，例如 cpu 或 cuda")
 
-    parser.add_argument("--max_embeddings", type=int, default=1200000)
-    parser.add_argument("--train_crop_scale_range", type=float, nargs=2, default=[0.7, 1.3])
-    parser.add_argument("--train_crop_round_multiple", type=int, default=8)
-    parser.add_argument("--train_min_crop_size", type=int, default=240)
-    parser.add_argument("--random_seed", type=int, default=42)
-    parser.add_argument("--stream_to_disk", action="store_false")
-    parser.add_argument("--stream_dir", type=str, default="./embedding_cache")
-    parser.add_argument("--cleanup_stream_dir", action="store_false")
+    # 主干网络，目前实现中仅支持 resnet50。
+    parser.add_argument("--backbone", type=str, default="resnet50", help="特征提取主干网络，当前仅支持 resnet50")
 
-    parser.add_argument("--enable_train_augment", action="store_false")
-    parser.add_argument("--aug_keep_original_count", type=int, default=1)
-    parser.add_argument("--aug_vflip_count", type=int, default=0)
-    parser.add_argument("--aug_rotate_count", type=int, default=0)
-    parser.add_argument("--aug_brightness_count", type=int, default=0)
-    parser.add_argument("--aug_contrast_count", type=int, default=0)
-    parser.add_argument("--aug_saturation_count", type=int, default=0)
-    parser.add_argument("--aug_blur_count", type=int, default=0)
-    parser.add_argument("--aug_noise_count", type=int, default=0)
-    parser.add_argument("--aug_color_shift_count", type=int, default=0)
-    parser.add_argument("--aug_gamma_count", type=int, default=0)
-    parser.add_argument("--aug_channel_swap_count", type=int, default=0)
-    parser.add_argument("--aug_perspective_count", type=int, default=0)
+    # 每个裁剪块送入主干网络前会被缩放到该尺寸。
+    parser.add_argument("--input_size", type=int, nargs=2, default=[240, 240], metavar=("H", "W"), help="主干网络输入尺寸，高和宽，例如 --input_size 240 240")
 
-    parser.add_argument("--aug_rotate_range", type=float, nargs=2, default=[-10.0, 10.0])
-    parser.add_argument("--aug_brightness_limit", type=float, default=0.08)
-    parser.add_argument("--aug_contrast_limit", type=float, default=0.08)
-    parser.add_argument("--aug_saturation_limit", type=float, default=0.08)
-    parser.add_argument("--aug_blur_sigma_min", type=float, default=0.1)
-    parser.add_argument("--aug_blur_sigma_max", type=float, default=1.3)
-    parser.add_argument("--aug_noise_sigma_min", type=float, default=2.0)
-    parser.add_argument("--aug_noise_sigma_max", type=float, default=8.0)
-    parser.add_argument("--aug_color_shift_limit", type=int, default=8)
-    parser.add_argument("--aug_gamma_range", type=float, nargs=2, default=[0.95, 1.05])
-    parser.add_argument("--aug_perspective_distortion", type=float, default=0.04)
+    # 滑窗裁剪大小，越大上下文越多，但空间定位会更粗。
+    parser.add_argument("--crop_size", type=int, nargs=2, default=[160, 160], metavar=("H", "W"), help="滑窗裁剪尺寸，高和宽，例如 --crop_size 160 160")
 
-    parser.add_argument("--append_select_roi", action="store_true")
-    parser.add_argument("--append_max_embeddings", type=int, default=0)
-    parser.add_argument("--append_recompress_ratio", type=float, default=1.0)
+    # 滑窗步长；如果不填，内部默认使用 crop_size 的一半。
+    parser.add_argument("--stride", type=int, nargs=2, default=None, metavar=("H", "W"), help="滑窗步长，高和宽；不填时默认使用 crop_size 的一半")
+
+    # 训练时每次并行处理多少个裁剪块。
+    parser.add_argument("--batch_size", type=int, default=32, help="训练构建记忆库时的批大小")
+
+    # 检测和阈值校准时每次并行处理多少个裁剪块。
+    parser.add_argument("--detect_batch_size", type=int, default=8, help="检测或阈值校准时的批大小")
+
+    # 合并特征图后使用的局部平滑卷积核大小。
+    parser.add_argument("--local_kernel", type=int, default=3, help="特征图局部平滑卷积核大小")
+
+    # 构建最终记忆库前的压缩比例，越小保留的代表性特征越少。
+    parser.add_argument("--memory_ratio", type=float, default=0.002, help="记忆库压缩比例，越小越省内存")
+
+    # 随机投影后的目标特征维度。
+    parser.add_argument("--target_embed_dimension", type=int, default=1024, help="随机投影后的目标特征维度")
+
+    # 每个 patch 评分时使用的近邻个数。
+    parser.add_argument("--knn_neighbors", type=int, default=1, help="KNN 近邻数量")
+
+    # 近邻检索后端，auto 会在 CUDA 上优先选 torch，否则选 sklearn。
+    parser.add_argument("--knn_backend", type=str, default="auto", choices=["auto", "torch", "sklearn", "faiss"], help="KNN 后端：auto、torch、sklearn 或 faiss")
+
+    # KNN 分块查询大小，用于控制显存或内存占用。
+    parser.add_argument("--knn_query_chunk_size", type=int, default=8192, help="KNN 分块查询大小，用于控制内存占用")
+
+    # 在 CUDA 路径上启用混合精度。
+    parser.add_argument("--use_amp", action="store_true", help="启用混合精度推理，仅在 CUDA 下生效")
+
+    # 若大于 0，则先把图像长边缩放到不超过该值，再进入后续流程。
+    parser.add_argument("--infer_long_side", type=int, default=0, help="推理前限制图像长边大小，0 表示不限制")
+
+    # 训练用正常样本目录。
+    parser.add_argument("--train_dir", type=str, help="训练模式下的正常样本目录")
+
+    # 训练结束后保存模型的路径。
+    parser.add_argument("--save_model", type=str, default="memory_model.pt", help="训练完成后保存模型的路径")
+
+    # 检测、阈值校准、追加正样本时加载的模型路径。
+    parser.add_argument("--model_path", type=str, default="memory_model.pt", help="已有模型路径")
+
+    # 输入路径，可为单张图片或目录，具体取决于 mode。
+    parser.add_argument("--input", type=str, help="输入图片路径或输入目录")
+
+    # 输出目录，用于保存热力图、叠加图、结果 JSON 等。
+    parser.add_argument("--output", type=str, help="输出目录，用于保存检测结果")
+
+    # 正常 / 异常判定阈值。
+    parser.add_argument("--threshold", type=float, default=1.0, help="异常判定阈值")
+
+    # 阈值校准时使用的分位数。
+    parser.add_argument("--quantile", type=float, default=0.99, help="阈值校准时使用的分位数")
+
+    # 单图检测前是否手工框选 ROI。
+    parser.add_argument("--select_roi", action="store_true", help="单图检测前手工选择 ROI 区域")
+
+    # 热力图显示范围中，基于均值加标准差时的标准差倍数。
+    parser.add_argument("--heatmap_std_scale", type=float, default=3.0, help="热力图显示范围中使用的标准差倍数")
+
+    # 热力图显示范围上界的高分位数。
+    parser.add_argument("--heatmap_quantile", type=float, default=0.999, help="热力图显示范围上界使用的分位数")
+
+    # 阈值校准时最多采样多少个热力图数值，避免内存过大。
+    parser.add_argument("--max_heatmap_samples", type=int, default=2_000_000, help="阈值校准时热力图采样上限")
+
+    # 若开启，则输出热力图时把阈值以下的位置强制置零。
+    parser.add_argument("--heatmap_zero_below_threshold", action="store_true", help="将阈值以下的热力图值置零")
+
+    # 训练时可保留的原始 embedding 上限。
+    parser.add_argument("--max_embeddings", type=int, default=1200000, help="训练时最多保留多少原始 embedding")
+
+    # 训练时随机裁剪尺度范围。
+    parser.add_argument("--train_crop_scale_range", type=float, nargs=2, default=[0.7, 1.3], metavar=("MIN", "MAX"), help="训练随机裁剪缩放范围，例如 --train_crop_scale_range 0.7 1.3")
+
+    # 训练时裁剪尺寸会对齐到该倍数。
+    parser.add_argument("--train_crop_round_multiple", type=int, default=8, help="训练裁剪尺寸对齐倍数")
+
+    # 训练时允许的最小裁剪尺寸。
+    parser.add_argument("--train_min_crop_size", type=int, default=240, help="训练时最小裁剪尺寸")
+
+    # 随机采样相关流程所用随机种子。
+    parser.add_argument("--random_seed", type=int, default=42, help="随机种子")
+
+    # 是否把 embedding 先流式写入磁盘而不是全部放内存。
+    # 注意：这里使用的是 store_false 语义，传入该参数后反而会关闭磁盘流式写入。
+    parser.add_argument("--stream_to_disk", action="store_false", help="是否将 embedding 流式写入磁盘；注意传入该参数会关闭此功能")
+
+    # 流式写盘时的临时缓存目录。
+    parser.add_argument("--stream_dir", type=str, default="./embedding_cache", help="embedding 流式缓存目录")
+
+    # 训练前是否清空流式缓存目录。
+    # 注意：这里使用的是 store_false 语义，传入该参数后反而会关闭清理。
+    parser.add_argument("--cleanup_stream_dir", action="store_false", help="训练前是否清理缓存目录；注意传入该参数会关闭清理")
+
+    # 是否开启训练时数据增强。
+    # 注意：这里使用的是 store_false 语义，传入该参数后反而会关闭增强。
+    parser.add_argument("--enable_train_augment", action="store_false", help="是否开启训练增强；注意传入该参数会关闭增强")
+
+    # 原图保留次数。
+    parser.add_argument("--aug_keep_original_count", type=int, default=1, help="每个裁剪块保留原图的次数")
+    # 垂直翻转增强次数。
+    parser.add_argument("--aug_vflip_count", type=int, default=0, help="每个裁剪块生成多少个垂直翻转样本")
+    # 旋转增强次数。
+    parser.add_argument("--aug_rotate_count", type=int, default=0, help="每个裁剪块生成多少个随机旋转样本")
+    # 亮度增强次数。
+    parser.add_argument("--aug_brightness_count", type=int, default=0, help="每个裁剪块生成多少个亮度扰动样本")
+    # 对比度增强次数。
+    parser.add_argument("--aug_contrast_count", type=int, default=0, help="每个裁剪块生成多少个对比度扰动样本")
+    # 饱和度增强次数。
+    parser.add_argument("--aug_saturation_count", type=int, default=0, help="每个裁剪块生成多少个饱和度扰动样本")
+    # 模糊增强次数。
+    parser.add_argument("--aug_blur_count", type=int, default=0, help="每个裁剪块生成多少个高斯模糊样本")
+    # 噪声增强次数。
+    parser.add_argument("--aug_noise_count", type=int, default=0, help="每个裁剪块生成多少个高斯噪声样本")
+    # 颜色偏移增强次数。
+    parser.add_argument("--aug_color_shift_count", type=int, default=0, help="每个裁剪块生成多少个颜色偏移样本")
+    # Gamma 增强次数。
+    parser.add_argument("--aug_gamma_count", type=int, default=0, help="每个裁剪块生成多少个 gamma 扰动样本")
+    # 通道交换增强次数。
+    parser.add_argument("--aug_channel_swap_count", type=int, default=0, help="每个裁剪块生成多少个通道交换样本")
+    # 透视变换增强次数。
+    parser.add_argument("--aug_perspective_count", type=int, default=0, help="每个裁剪块生成多少个透视变换样本")
+
+    # 旋转增强角度范围。
+    parser.add_argument("--aug_rotate_range", type=float, nargs=2, default=[-10.0, 10.0], metavar=("MIN", "MAX"), help="旋转增强角度范围，单位为度")
+    # 亮度扰动幅度。
+    parser.add_argument("--aug_brightness_limit", type=float, default=0.08, help="亮度增强的最大扰动幅度")
+    # 对比度扰动幅度。
+    parser.add_argument("--aug_contrast_limit", type=float, default=0.08, help="对比度增强的最大扰动幅度")
+    # 饱和度扰动幅度。
+    parser.add_argument("--aug_saturation_limit", type=float, default=0.08, help="饱和度增强的最大扰动幅度")
+    # 模糊增强最小 sigma。
+    parser.add_argument("--aug_blur_sigma_min", type=float, default=0.1, help="高斯模糊最小 sigma")
+    # 模糊增强最大 sigma。
+    parser.add_argument("--aug_blur_sigma_max", type=float, default=1.3, help="高斯模糊最大 sigma")
+    # 噪声增强最小 sigma。
+    parser.add_argument("--aug_noise_sigma_min", type=float, default=2.0, help="高斯噪声最小 sigma")
+    # 噪声增强最大 sigma。
+    parser.add_argument("--aug_noise_sigma_max", type=float, default=8.0, help="高斯噪声最大 sigma")
+    # 颜色偏移上限。
+    parser.add_argument("--aug_color_shift_limit", type=int, default=8, help="颜色偏移增强的最大通道偏移值")
+    # Gamma 范围。
+    parser.add_argument("--aug_gamma_range", type=float, nargs=2, default=[0.95, 1.05], metavar=("MIN", "MAX"), help="gamma 增强范围")
+    # 透视变换强度。
+    parser.add_argument("--aug_perspective_distortion", type=float, default=0.04, help="透视变换增强强度")
+
+    # 追加正样本前是否先手工选择 ROI。
+    parser.add_argument("--append_select_roi", action="store_true", help="追加正样本前手工选择 ROI")
+
+    # 追加正样本时最多保留多少个 embedding，0 表示全保留。
+    parser.add_argument("--append_max_embeddings", type=int, default=0, help="追加正样本时最多保留多少个 embedding，0 表示全部保留")
+
+    # 追加正样本后是否再次压缩记忆库。
+    parser.add_argument("--append_recompress_ratio", type=float, default=1.0, help="追加正样本后重新压缩的比例，1.0 表示不压缩")
     return parser
 
 

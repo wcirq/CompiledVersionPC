@@ -32,6 +32,12 @@ def clean_artifacts():
         remove_path(ext)
 
 
+def cleanup_engine_binaries():
+    for pattern in ("*.so", "*.pyd"):
+        for binary in (ROOT / "engine").glob(pattern):
+            remove_path(binary)
+
+
 def collect_binaries():
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     target_engine = DIST_DIR / "engine"
@@ -48,6 +54,7 @@ def collect_binaries():
     init_dst = target_engine / "__init__.py"
     shutil.copy2(init_src, init_dst)
     copied.append(init_dst)
+
     return copied
 
 
@@ -76,6 +83,7 @@ def main():
 
     run_build()
     copied = collect_binaries()
+    cleanup_engine_binaries()
 
     if not args.keep_generated_c:
         for c_file in (ROOT / "engine").glob("*.c"):

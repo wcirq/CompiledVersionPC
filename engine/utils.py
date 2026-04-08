@@ -4,20 +4,11 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-try:
-    import cv2
-    import numpy as np
-    import torch
-except Exception as exc:
-    from .debug_utils import print_exception_details
-
-    print_exception_details(exc, context="engine.utils import failed")
-    raise
-
-from .debug_utils import guarded
+import cv2
+import numpy as np
+import torch
 
 
-@guarded("engine.utils.list_images failed")
 def list_images(image_dir: str) -> List[str]:
     image_extensions = [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"]
     image_paths = []
@@ -28,7 +19,6 @@ def list_images(image_dir: str) -> List[str]:
     return sorted(str(p) for p in image_paths)
 
 
-@guarded("engine.utils.read_image_rgb failed")
 def read_image_rgb(image_path: str) -> np.ndarray:
     image = cv2.imread(image_path)
     if image is None:
@@ -36,35 +26,30 @@ def read_image_rgb(image_path: str) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
-@guarded("engine.utils.ensure_dir failed")
 def ensure_dir(path: Optional[str]):
     if path:
         os.makedirs(path, exist_ok=True)
 
 
-@guarded("engine.utils.to_bgr failed")
 def to_bgr(image_rgb: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
 
 
-@guarded("engine.utils.generate_positions failed")
 def generate_positions(length: int, crop_len: int, stride: int) -> List[int]:
     if length <= crop_len:
         return [0]
     positions = list(range(0, length - crop_len + 1, stride))
     last = length - crop_len
-    if positions[-1] != last:
+    if positions[len(positions) - 1] != last:
         positions.append(last)
     return positions
 
 
-@guarded("engine.utils.normalize_fixed failed")
 def normalize_fixed(arr: np.ndarray, vmin: float, vmax: float, eps: float = 1e-12) -> np.ndarray:
     arr = np.clip(arr, vmin, vmax)
     return ((arr - vmin) / max(vmax - vmin, eps)).astype(np.float32)
 
 
-@guarded("engine.utils.resize_long_side failed")
 def resize_long_side(image: np.ndarray, target_long_side: int) -> Tuple[np.ndarray, float]:
     if target_long_side is None or target_long_side <= 0:
         return image, 1.0
@@ -79,7 +64,6 @@ def resize_long_side(image: np.ndarray, target_long_side: int) -> Tuple[np.ndarr
     return resized, scale
 
 
-@guarded("engine.utils.select_roi_with_tk failed")
 def select_roi_with_tk(
     image_bgr: np.ndarray,
     window_title: str = "Select ROI",
@@ -203,14 +187,12 @@ def select_roi_with_tk(
     return result["roi"]
 
 
-@guarded("engine.utils.round_to_multiple failed")
 def round_to_multiple(x: int, multiple: int) -> int:
     if multiple <= 1:
         return int(x)
     return max(multiple, int(round(x / multiple) * multiple))
 
 
-@guarded("engine.utils.sample_random_crop_size failed")
 def sample_random_crop_size(
     base_crop_size: Tuple[int, int],
     scale_range: Tuple[float, float] = (1.0, 1.0),
@@ -234,7 +216,6 @@ def sample_random_crop_size(
     return max(min_crop_size, crop_h), max(min_crop_size, crop_w)
 
 
-@guarded("engine.utils.scale_stride_with_crop failed")
 def scale_stride_with_crop(
     base_crop_size: Tuple[int, int],
     new_crop_size: Tuple[int, int],
@@ -252,7 +233,6 @@ def scale_stride_with_crop(
     return max(1, sh), max(1, sw)
 
 
-@guarded("engine.utils.save_embeddings_stream_init failed")
 def save_embeddings_stream_init(save_dir: str, embed_dim: int):
     os.makedirs(save_dir, exist_ok=True)
     meta = {"embed_dim": int(embed_dim), "total_embeddings": 0, "num_chunks": 0}
@@ -260,7 +240,6 @@ def save_embeddings_stream_init(save_dir: str, embed_dim: int):
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
-@guarded("engine.utils.save_embeddings_stream_append failed")
 def save_embeddings_stream_append(save_dir: str, embeddings: torch.Tensor):
     meta_path = os.path.join(save_dir, "meta.json")
     with open(meta_path, "r", encoding="utf-8") as f:
@@ -273,7 +252,6 @@ def save_embeddings_stream_append(save_dir: str, embeddings: torch.Tensor):
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
-@guarded("engine.utils.load_random_embeddings_from_chunks failed")
 def load_random_embeddings_from_chunks(save_dir: str, max_embeddings: int, seed: int = 42) -> torch.Tensor:
     with open(os.path.join(save_dir, "meta.json"), "r", encoding="utf-8") as f:
         meta = json.load(f)
@@ -320,20 +298,17 @@ def load_random_embeddings_from_chunks(save_dir: str, max_embeddings: int, seed:
     return sampled
 
 
-@guarded("engine.utils.cleanup_dir failed")
 def cleanup_dir(path: str):
     if os.path.exists(path):
         shutil.rmtree(path)
 
 
-@guarded("engine.utils.parse_tuple2 failed")
 def parse_tuple2(values, name: str) -> Tuple[int, int]:
     if values is None or len(values) != 2:
         raise ValueError(f"{name} must contain exactly 2 integers.")
     return int(values[0]), int(values[1])
 
 
-@guarded("engine.utils.parse_float_tuple2 failed")
 def parse_float_tuple2(values, name: str) -> Tuple[float, float]:
     if values is None or len(values) != 2:
         raise ValueError(f"{name} must contain exactly 2 numbers.")

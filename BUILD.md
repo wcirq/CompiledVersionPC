@@ -23,6 +23,8 @@ Compiled binaries are collected into:
 
 `./dist_binary/engine`
 
+The temporary `engine/*.so` or `engine/*.pyd` files generated during the build are deleted automatically after collection.
+
 Typical result:
 
 - Linux: `.so`

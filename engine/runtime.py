@@ -3,54 +3,45 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    import cv2
-    import numpy as np
-    import torch
-    import torch.nn.functional as F
-    from tqdm import tqdm
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
 
-    from .augment import (
-        adjust_brightness,
-        adjust_contrast,
-        adjust_saturation,
-        channel_swap,
-        color_shift,
-        gamma_adjust,
-        gaussian_blur,
-        gaussian_noise,
-        perspective_warp,
-        rotate_image,
-        vertical_flip,
-    )
-    from .backbone import FeatureBackbone
-    from .indexing import MemoryIndex
-    from .utils import (
-        cleanup_dir,
-        ensure_dir,
-        generate_positions,
-        list_images,
-        load_random_embeddings_from_chunks,
-        normalize_fixed,
-        read_image_rgb,
-        resize_long_side,
-        sample_random_crop_size,
-        save_embeddings_stream_append,
-        save_embeddings_stream_init,
-        scale_stride_with_crop,
-        to_bgr,
-    )
-except Exception as exc:
-    from .debug_utils import print_exception_details
-
-    print_exception_details(exc, context="engine.runtime import failed")
-    raise
-
-from .debug_utils import guarded
+from .augment import (
+    adjust_brightness,
+    adjust_contrast,
+    adjust_saturation,
+    channel_swap,
+    color_shift,
+    gamma_adjust,
+    gaussian_blur,
+    gaussian_noise,
+    perspective_warp,
+    rotate_image,
+    vertical_flip,
+)
+from .backbone import FeatureBackbone
+from .indexing import MemoryIndex
+from .utils import (
+    cleanup_dir,
+    ensure_dir,
+    generate_positions,
+    list_images,
+    load_random_embeddings_from_chunks,
+    normalize_fixed,
+    read_image_rgb,
+    resize_long_side,
+    sample_random_crop_size,
+    save_embeddings_stream_append,
+    save_embeddings_stream_init,
+    scale_stride_with_crop,
+    to_bgr,
+)
 
 
 class VisionMemoryEngine:
-    @guarded("VisionMemoryEngine.__init__ failed")
     def __init__(
         self,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -147,7 +138,6 @@ class VisionMemoryEngine:
         self.heatmap_vis_min: Optional[float] = None
         self.heatmap_vis_max: Optional[float] = None
 
-    @guarded("VisionMemoryEngine._init_projector failed")
     def _init_projector(self):
         if self.target_embed_dimension <= 0:
             return None
@@ -156,7 +146,6 @@ class VisionMemoryEngine:
         mat = torch.randn(self.raw_embed_dim, self.target_embed_dimension, generator=gen, dtype=torch.float32)
         return F.normalize(mat, dim=0)
 
-    @guarded("VisionMemoryEngine._images_to_tensor_batch failed")
     def _images_to_tensor_batch(self, images_rgb: List[np.ndarray]) -> torch.Tensor:
         h, w = self.input_size
         arrs = []
@@ -167,7 +156,6 @@ class VisionMemoryEngine:
             arrs.append(np.transpose(x, (2, 0, 1)))
         return torch.from_numpy(np.stack(arrs, axis=0)).float()
 
-    @guarded("VisionMemoryEngine._extract_sliding_crops failed")
     def _extract_sliding_crops(
         self,
         image_rgb: np.ndarray,
@@ -200,9 +188,10 @@ class VisionMemoryEngine:
                 boxes.append((y, y + crop_h, x, x + crop_w))
         return crops, boxes, (orig_h, orig_w), padded
 
-    @guarded("VisionMemoryEngine._merge_features failed")
     def _merge_features(self, feat2: torch.Tensor, feat3: torch.Tensor):
-        feat2_aligned = F.adaptive_avg_pool2d(feat2, output_size=feat3.shape[-2:])
+        feat3_h = int(feat3.shape[2])
+        feat3_w = int(feat3.shape[3])
+        feat2_aligned = F.adaptive_avg_pool2d(feat2, output_size=(feat3_h, feat3_w))
         feat = torch.cat([feat2_aligned, feat3], dim=1)
         if self.local_kernel > 1:
             pad = self.local_kernel // 2
@@ -215,14 +204,12 @@ class VisionMemoryEngine:
         return patches, (h, w)
 
     @torch.no_grad()
-    @guarded("VisionMemoryEngine._extract_embeddings_batch failed")
     def _extract_embeddings_batch(self, images: torch.Tensor):
         images = images.to(self.device, non_blocking=True)
         with torch.autocast(device_type="cuda", enabled=self.use_amp):
             feat2, feat3 = self.feature_extractor(images)
             return self._merge_features(feat2, feat3)
 
-    @guarded("VisionMemoryEngine._compress_memory failed")
     def _compress_memory(self, features: torch.Tensor, sampling_ratio: float, start_points: int = 10) -> torch.Tensor:
         n_total = features.shape[0]
         n_select = max(1, int(n_total * sampling_ratio))
@@ -254,7 +241,6 @@ class VisionMemoryEngine:
         pbar.close()
         return feats[torch.tensor(selected, dtype=torch.long, device=device)].cpu()
 
-    @guarded("VisionMemoryEngine._build_index failed")
     def _build_index(self):
         if self.memory_bank is None or len(self.memory_bank) == 0:
             raise ValueError("Memory bank is empty.")
@@ -266,7 +252,6 @@ class VisionMemoryEngine:
         )
         self.memory_index.fit(self.memory_bank)
 
-    @guarded("VisionMemoryEngine._generate_augmented_crops failed")
     def _generate_augmented_crops(self, crop_rgb: np.ndarray) -> List[np.ndarray]:
         outputs = [crop_rgb.copy() for _ in range(max(0, self.aug_keep_original_count if self.enable_train_augment else 1))]
         if not self.enable_train_augment:
@@ -284,7 +269,6 @@ class VisionMemoryEngine:
         outputs.extend(perspective_warp(crop_rgb, self.aug_perspective_distortion, border_value=255) for _ in range(max(0, self.aug_perspective_count)))
         return outputs
 
-    @guarded("VisionMemoryEngine.build_memory_bank failed")
     def build_memory_bank(
         self,
         image_dir: str,
@@ -322,7 +306,8 @@ class VisionMemoryEngine:
                 return
             batch = self._images_to_tensor_batch(batch_crops)
             embs, _ = self._extract_embeddings_batch(batch)
-            embs = embs.reshape(-1, embs.shape[-1]).cpu().float()
+            embed_dim = int(embs.shape[2])
+            embs = embs.reshape(-1, embed_dim).cpu().float()
             total_embeddings_written += int(embs.shape[0])
             if stream_to_disk:
                 save_embeddings_stream_append(stream_dir, embs)
@@ -376,7 +361,6 @@ class VisionMemoryEngine:
         return int(self.memory_bank.shape[0])
 
     @torch.no_grad()
-    @guarded("VisionMemoryEngine._compute_score_map failed")
     def _compute_score_map(
         self,
         image_rgb: np.ndarray,
@@ -404,7 +388,8 @@ class VisionMemoryEngine:
             ed = min(st + max(1, int(detect_batch_size)), len(crops))
             batch = self._images_to_tensor_batch(crops[st:ed])
             embeddings, (feat_h, feat_w) = self._extract_embeddings_batch(batch)
-            distances, _ = self.memory_index.kneighbors(embeddings.reshape(-1, embeddings.shape[-1]).contiguous())
+            embed_dim = int(embeddings.shape[2])
+            distances, _ = self.memory_index.kneighbors(embeddings.reshape(-1, embed_dim).contiguous())
             patch_scores = distances[:, 0].reshape(ed - st, feat_h, feat_w).astype(np.float32)
             global_score = max(global_score, float(patch_scores.max()))
 
@@ -419,7 +404,6 @@ class VisionMemoryEngine:
             full_heatmap = cv2.resize(full_heatmap, (orig_w0, orig_h0), interpolation=cv2.INTER_CUBIC)
         return float(global_score), full_heatmap.astype(np.float32)
 
-    @guarded("VisionMemoryEngine.calibrate_threshold failed")
     def calibrate_threshold(
         self,
         image_dir: str,
@@ -471,7 +455,6 @@ class VisionMemoryEngine:
 
         return self.recommended_threshold
 
-    @guarded("VisionMemoryEngine.detect_image failed")
     def detect_image(
         self,
         image_rgb: np.ndarray,
@@ -544,12 +527,10 @@ class VisionMemoryEngine:
 
         return is_anomaly, global_score, full_heatmap
 
-    @guarded("VisionMemoryEngine.detect failed")
     def detect(self, image_path: str, **kwargs):
         image_rgb = read_image_rgb(image_path)
         return self.detect_image(image_rgb=image_rgb, **kwargs)
 
-    @guarded("VisionMemoryEngine.detect_batch failed")
     def detect_batch(
         self,
         image_dir: str,
@@ -587,7 +568,6 @@ class VisionMemoryEngine:
                 json.dump(results, f, ensure_ascii=False, indent=2)
         return results
 
-    @guarded("VisionMemoryEngine.save failed")
     def save(self, save_path: str):
         torch.save(
             {
@@ -642,7 +622,6 @@ class VisionMemoryEngine:
         )
         print(f"Model saved to: {save_path}")
 
-    @guarded("VisionMemoryEngine._sync_runtime_state failed")
     def _sync_runtime_state(self):
         self.use_amp = bool(self.use_amp and torch.cuda.is_available() and "cuda" in str(self.device))
         self.feature_extractor = self.feature_extractor.to(self.device).float().eval()
@@ -651,7 +630,6 @@ class VisionMemoryEngine:
         if self.memory_bank is not None:
             self.memory_bank = self.memory_bank.cpu().float()
 
-    @guarded("VisionMemoryEngine.load failed")
     def load(self, load_path: str):
         try:
             data = torch.load(load_path, map_location="cpu", weights_only=False)
@@ -712,7 +690,6 @@ class VisionMemoryEngine:
         print(f"Model loaded from: {load_path}")
         print(f"Memory bank shape: {tuple(self.memory_bank.shape)}")
 
-    @guarded("VisionMemoryEngine.extract_image_embeddings failed")
     def extract_image_embeddings(
         self,
         image_rgb: np.ndarray,
@@ -732,10 +709,10 @@ class VisionMemoryEngine:
             ed = min(st + max(1, int(detect_batch_size)), len(crops))
             batch = self._images_to_tensor_batch(crops[st:ed])
             embeddings, _ = self._extract_embeddings_batch(batch)
-            outputs.append(embeddings.reshape(-1, embeddings.shape[-1]).cpu().float())
+            embed_dim = int(embeddings.shape[2])
+            outputs.append(embeddings.reshape(-1, embed_dim).cpu().float())
         return torch.cat(outputs, dim=0).float()
 
-    @guarded("VisionMemoryEngine.append_positive_embeddings failed")
     def append_positive_embeddings(
         self,
         embeddings: torch.Tensor,
