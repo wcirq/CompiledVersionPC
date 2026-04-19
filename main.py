@@ -1,12 +1,47 @@
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
+from typing import Union
 import cv2
 import torch
 from tqdm import tqdm
-from engine import VisionMemoryEngine
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from engine import VisionMemoryEngine
+except ImportError:
+    from engine.runtime import VisionMemoryEngine
+
 from engine.utils import ensure_dir, list_images, parse_float_tuple2, parse_tuple2, select_roi_with_tk
+
+
+CLI_RUNTIME_OVERRIDE_FLAGS = {
+    "--device": "device",
+    "--input_size": "input_size",
+    "--local_kernel": "local_kernel",
+    "--knn_backend": "knn_backend",
+    "--knn_query_chunk_size": "knn_query_chunk_size",
+    "--bm_bmodel_path": "bm_bmodel_path",
+    "--bm_device_id": "bm_device_id",
+    "--bm_db_chunk_size": "bm_db_chunk_size",
+    "--bm_graph_name": "bm_graph_name",
+    "--bm_query_input_name": "bm_query_input_name",
+    "--bm_database_input_name": "bm_database_input_name",
+    "--bm_output_name": "bm_output_name",
+    "--use_amp": "use_amp",
+    "--backbone_backend": "backbone_backend",
+    "--backbone_bmodel_path": "backbone_bmodel_path",
+    "--backbone_device_id": "backbone_device_id",
+    "--backbone_graph_name": "backbone_graph_name",
+    "--backbone_input_name": "backbone_input_name",
+    "--backbone_feat2_output_name": "backbone_feat2_output_name",
+    "--backbone_feat3_output_name": "backbone_feat3_output_name",
+}
 
 
 def build_parser():
@@ -29,6 +64,13 @@ def build_parser():
 
     # 主干网络，目前实现中仅支持 resnet50。
     parser.add_argument("--backbone", type=str, default="resnet50", help="特征提取主干网络，当前仅支持 resnet50")
+    parser.add_argument("--backbone_backend", type=str, default="torch", choices=["torch", "bm"], help="主干推理后端：torch 或 bm")
+    parser.add_argument("--backbone_bmodel_path", type=str, default=None, help="BM1684X backbone bmodel 路径，启用 --backbone_backend bm 时必填")
+    parser.add_argument("--backbone_device_id", type=int, default=0, help="BM1684X backbone 设备号")
+    parser.add_argument("--backbone_graph_name", type=str, default=None, help="BM1684X backbone graph 名称")
+    parser.add_argument("--backbone_input_name", type=str, default=None, help="BM1684X backbone 输入名")
+    parser.add_argument("--backbone_feat2_output_name", type=str, default=None, help="BM1684X backbone feat2 输出名")
+    parser.add_argument("--backbone_feat3_output_name", type=str, default=None, help="BM1684X backbone feat3 输出名")
 
     # 每个裁剪块送入主干网络前会被缩放到该尺寸。
     parser.add_argument("--input_size", type=int, nargs=2, default=[640, 640], metavar=("H", "W"), help="主干网络输入尺寸，高和宽，例如 --input_size 240 240")
@@ -225,6 +267,13 @@ def build_engine(args):
     return VisionMemoryEngine(
         device=args.device,
         backbone=args.backbone,
+        backbone_backend=args.backbone_backend,
+        backbone_bmodel_path=args.backbone_bmodel_path,
+        backbone_device_id=args.backbone_device_id,
+        backbone_graph_name=args.backbone_graph_name,
+        backbone_input_name=args.backbone_input_name,
+        backbone_feat2_output_name=args.backbone_feat2_output_name,
+        backbone_feat3_output_name=args.backbone_feat3_output_name,
         input_size=parse_tuple2(args.input_size, "input_size"),
         memory_ratio=args.memory_ratio,
         target_embed_dimension=args.target_embed_dimension,
@@ -267,12 +316,28 @@ def build_engine(args):
     )
 
 
+def collect_runtime_overrides(args, argv):
+    seen_flags = {
+        token.split("=", 1)[0]
+        for token in argv
+        if token.startswith("--")
+    }
+    overrides = {}
+    for flag, attr in CLI_RUNTIME_OVERRIDE_FLAGS.items():
+        if flag in seen_flags:
+            overrides[attr] = getattr(args, attr)
+    return overrides
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    runtime_overrides = collect_runtime_overrides(args, sys.argv[1:])
 
     if args.knn_backend == "bm" and not args.bm_bmodel_path:
         parser.error("knn_backend=bm requires --bm_bmodel_path")
+    if args.backbone_backend == "bm" and not args.backbone_bmodel_path:
+        parser.error("backbone_backend=bm requires --backbone_bmodel_path")
 
     crop_size = parse_tuple2(args.crop_size, "crop_size")
     stride = parse_tuple2(args.stride, "stride") if args.stride is not None else None
@@ -308,6 +373,7 @@ def main():
         if not args.input:
             parser.error("calibrate_threshold mode requires --input")
         engine.load(args.model_path)
+        engine.apply_runtime_overrides(**runtime_overrides)
         thr = engine.calibrate_threshold(
             image_dir=args.input,
             crop_size=crop_size,
@@ -340,6 +406,7 @@ def main():
                 return
 
         engine.load(args.model_path)
+        engine.apply_runtime_overrides(**runtime_overrides)
         heatmap_path = os.path.join(args.output, f"{Path(args.input).stem}_overlay.jpg") if args.output else None
         start = time.time()
 
@@ -389,6 +456,7 @@ def main():
         if not args.input:
             parser.error("detect_batch mode requires --input")
         engine.load(args.model_path)
+        engine.apply_runtime_overrides(**runtime_overrides)
         results = engine.detect_batch(
             image_dir=args.input,
             crop_size=crop_size,
@@ -411,6 +479,7 @@ def main():
         if not args.input:
             parser.error("append_positive mode requires --input")
         engine.load(args.model_path)
+        engine.apply_runtime_overrides(**runtime_overrides)
         input_path = Path(args.input)
         image_paths = list_images(str(input_path)) if input_path.is_dir() else [str(input_path)] if input_path.is_file() else []
         if not image_paths:
@@ -456,7 +525,7 @@ def main():
         print(f"Append positive finished. New memory bank size: {final_n}")
 
 
-def read_img(filename: str | os.PathLike[str]):
+def read_img(filename: Union[str, os.PathLike]):
     global _original_imread
     height = 640
     img = _original_imread(filename)

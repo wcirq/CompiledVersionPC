@@ -18,6 +18,7 @@ def build_extensions():
     module_files = [
         ENGINE_DIR / "augment.py",
         ENGINE_DIR / "backbone.py",
+        ENGINE_DIR / "backbone_bm.py",
         ENGINE_DIR / "indexing.py",
         ENGINE_DIR / "indexing_bm.py",
         ENGINE_DIR / "runtime.py",

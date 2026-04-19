@@ -74,6 +74,10 @@ python main.py detect \
   --bm_db_chunk_size 4096
 ```
 
+如果你要把 `resnet50` 主干也部署到 BM1684X TPU，请参考：
+
+- [docs/BM1684X_DEPLOY.md](/Users/yangyinqi/Documents/个人/简创空间/2-列车/CompiledVersionPC_20260419/docs/BM1684X_DEPLOY.md)
+
 如果你的环境里没有 C/C++ 编译工具链，编译二进制扩展时会失败。
 
 常见要求：

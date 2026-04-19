@@ -23,6 +23,7 @@ from .augment import (
     vertical_flip,
 )
 from .backbone import FeatureBackbone
+from .backbone_bm import BMFeatureBackbone
 from .indexing import MemoryIndex
 from .utils import (
     cleanup_dir,
@@ -46,6 +47,13 @@ class VisionMemoryEngine:
         self,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         backbone: str = "resnet50",
+        backbone_backend: str = "torch",
+        backbone_bmodel_path: Optional[str] = None,
+        backbone_device_id: int = 0,
+        backbone_graph_name: Optional[str] = None,
+        backbone_input_name: Optional[str] = None,
+        backbone_feat2_output_name: Optional[str] = None,
+        backbone_feat3_output_name: Optional[str] = None,
         input_size: Tuple[int, int] = (240, 240),
         memory_ratio: float = 0.1,
         target_embed_dimension: int = 1024,
@@ -88,9 +96,18 @@ class VisionMemoryEngine:
     ):
         if backbone != "resnet50":
             raise ValueError("Currently only resnet50 is supported.")
+        if backbone_backend not in {"torch", "bm"}:
+            raise ValueError("backbone_backend must be either 'torch' or 'bm'.")
 
         self.device = device
         self.backbone_name = backbone
+        self.backbone_backend = backbone_backend
+        self.backbone_bmodel_path = backbone_bmodel_path
+        self.backbone_device_id = int(backbone_device_id)
+        self.backbone_graph_name = backbone_graph_name
+        self.backbone_input_name = backbone_input_name
+        self.backbone_feat2_output_name = backbone_feat2_output_name
+        self.backbone_feat3_output_name = backbone_feat3_output_name
         self.input_size = tuple(input_size)
         self.memory_ratio = float(memory_ratio)
         self.target_embed_dimension = int(target_embed_dimension)
@@ -133,7 +150,7 @@ class VisionMemoryEngine:
         self.aug_gamma_range = tuple(aug_gamma_range)
         self.aug_perspective_distortion = float(aug_perspective_distortion)
 
-        self.feature_extractor = FeatureBackbone().to(self.device).eval()
+        self.feature_extractor = None
         self.raw_embed_dim = 512 + 1024
         self.project_matrix = self._init_projector()
 
@@ -151,6 +168,8 @@ class VisionMemoryEngine:
         self.heatmap_std: Optional[float] = None
         self.heatmap_vis_min: Optional[float] = None
         self.heatmap_vis_max: Optional[float] = None
+
+        self._sync_runtime_state()
 
     def _compress_to_size(self, features: torch.Tensor, target_size: int) -> torch.Tensor:
         n_total = int(features.shape[0])
@@ -227,6 +246,35 @@ class VisionMemoryEngine:
         mat = torch.randn(self.raw_embed_dim, self.target_embed_dimension, generator=gen, dtype=torch.float32)
         return F.normalize(mat, dim=0)
 
+    def _ensure_feature_extractor(self):
+        current_backend = getattr(self.feature_extractor, "backend", None)
+
+        if self.backbone_backend == "bm":
+            needs_rebuild = (
+                current_backend != "bm"
+                or self.feature_extractor is None
+                or getattr(self.feature_extractor, "bmodel_path", None) != self.backbone_bmodel_path
+                or getattr(self.feature_extractor, "device_id", None) != self.backbone_device_id
+                or getattr(self.feature_extractor, "graph_name", None) != self.backbone_graph_name
+                or getattr(self.feature_extractor, "input_name", None) != self.backbone_input_name
+                or getattr(self.feature_extractor, "feat2_output_name", None) != self.backbone_feat2_output_name
+                or getattr(self.feature_extractor, "feat3_output_name", None) != self.backbone_feat3_output_name
+            )
+            if needs_rebuild:
+                self.feature_extractor = BMFeatureBackbone(
+                    bmodel_path=self.backbone_bmodel_path or "",
+                    device_id=self.backbone_device_id,
+                    graph_name=self.backbone_graph_name,
+                    input_name=self.backbone_input_name,
+                    feat2_output_name=self.backbone_feat2_output_name,
+                    feat3_output_name=self.backbone_feat3_output_name,
+                ).eval()
+            return
+
+        if current_backend != "torch" or self.feature_extractor is None:
+            self.feature_extractor = FeatureBackbone().eval()
+        self.feature_extractor = self.feature_extractor.to(self.device).float().eval()
+
     def _images_to_tensor_batch(self, images_rgb: List[np.ndarray]) -> torch.Tensor:
         h, w = self.input_size
         arrs = []
@@ -286,6 +334,11 @@ class VisionMemoryEngine:
 
     @torch.no_grad()
     def _extract_embeddings_batch(self, images: torch.Tensor):
+        if self.backbone_backend == "bm":
+            images = images.detach().cpu().float()
+            feat2, feat3 = self.feature_extractor(images)
+            return self._merge_features(feat2, feat3)
+
         images = images.to(self.device, non_blocking=True)
         with torch.autocast(device_type="cuda", enabled=self.use_amp):
             feat2, feat3 = self.feature_extractor(images)
@@ -691,6 +744,13 @@ class VisionMemoryEngine:
                 "config": {
                     "device": self.device,
                     "backbone_name": self.backbone_name,
+                    "backbone_backend": self.backbone_backend,
+                    "backbone_bmodel_path": self.backbone_bmodel_path,
+                    "backbone_device_id": self.backbone_device_id,
+                    "backbone_graph_name": self.backbone_graph_name,
+                    "backbone_input_name": self.backbone_input_name,
+                    "backbone_feat2_output_name": self.backbone_feat2_output_name,
+                    "backbone_feat3_output_name": self.backbone_feat3_output_name,
                     "input_size": self.input_size,
                     "memory_ratio": self.memory_ratio,
                     "target_embed_dimension": self.target_embed_dimension,
@@ -748,11 +808,42 @@ class VisionMemoryEngine:
 
     def _sync_runtime_state(self):
         self.use_amp = bool(self.use_amp and torch.cuda.is_available() and "cuda" in str(self.device))
-        self.feature_extractor = self.feature_extractor.to(self.device).float().eval()
+        self._ensure_feature_extractor()
         if self.project_matrix is not None:
             self.project_matrix = self.project_matrix.float()
         if self.memory_bank is not None:
             self.memory_bank = self.memory_bank.cpu().float()
+        self.memory_index = None
+
+    def apply_runtime_overrides(self, **overrides):
+        runtime_fields = {
+            "device",
+            "input_size",
+            "use_amp",
+            "knn_backend",
+            "knn_query_chunk_size",
+            "bm_bmodel_path",
+            "bm_device_id",
+            "bm_db_chunk_size",
+            "bm_graph_name",
+            "bm_query_input_name",
+            "bm_database_input_name",
+            "bm_output_name",
+            "backbone_backend",
+            "backbone_bmodel_path",
+            "backbone_device_id",
+            "backbone_graph_name",
+            "backbone_input_name",
+            "backbone_feat2_output_name",
+            "backbone_feat3_output_name",
+            "local_kernel",
+        }
+        for key, value in overrides.items():
+            if key in runtime_fields and value is not None:
+                setattr(self, key, value)
+        if "input_size" in overrides and overrides["input_size"] is not None:
+            self.input_size = tuple(overrides["input_size"])
+        self._sync_runtime_state()
 
     def load(self, load_path: str):
         try:
@@ -763,6 +854,19 @@ class VisionMemoryEngine:
         config = data.get("config", {})
         self.device = "cpu"
         self.backbone_name = config.get("backbone_name", self.backbone_name)
+        self.backbone_backend = config.get("backbone_backend", self.backbone_backend)
+        self.backbone_bmodel_path = config.get("backbone_bmodel_path", self.backbone_bmodel_path)
+        self.backbone_device_id = int(config.get("backbone_device_id", self.backbone_device_id))
+        self.backbone_graph_name = config.get("backbone_graph_name", self.backbone_graph_name)
+        self.backbone_input_name = config.get("backbone_input_name", self.backbone_input_name)
+        self.backbone_feat2_output_name = config.get(
+            "backbone_feat2_output_name",
+            self.backbone_feat2_output_name,
+        )
+        self.backbone_feat3_output_name = config.get(
+            "backbone_feat3_output_name",
+            self.backbone_feat3_output_name,
+        )
         self.input_size = tuple(config.get("input_size", self.input_size))
         self.memory_ratio = config.get("memory_ratio", self.memory_ratio)
         self.target_embed_dimension = config.get("target_embed_dimension", self.target_embed_dimension)
@@ -817,7 +921,6 @@ class VisionMemoryEngine:
         self.heatmap_vis_max = data.get("heatmap_vis_max")
 
         self._sync_runtime_state()
-        self._build_index()
         print(f"Model loaded from: {load_path}")
         print(f"Memory bank shape: {tuple(self.memory_bank.shape)}")
 

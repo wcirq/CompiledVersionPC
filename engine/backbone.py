@@ -1,14 +1,26 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torchvision.models import ResNet50_Weights, resnet50
 
 
 class FeatureBackbone(nn.Module):
-    def __init__(self):
+    def __init__(self, weights_path: Optional[str] = None):
         super().__init__()
-        model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        try:
+            from torchvision.models import ResNet50_Weights, resnet50
+        except ImportError as exc:
+            raise ImportError(
+                "torchvision is required for the torch backbone. "
+                "Install torchvision or switch to --backbone_backend bm."
+            ) from exc
+
+        model = resnet50(weights=None if weights_path else ResNet50_Weights.IMAGENET1K_V2)
+        if weights_path:
+            state_dict = torch.load(weights_path, map_location="cpu")
+            model.load_state_dict(state_dict)
+
+        self.backend = "torch"
         self.conv1 = model.conv1
         self.bn1 = model.bn1
         self.relu = model.relu
