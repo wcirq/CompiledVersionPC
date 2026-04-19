@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from sklearn.neighbors import NearestNeighbors
 
+from .indexing_bm import BMVectorIndex
+
 
 class MemoryIndex:
     def __init__(
@@ -12,14 +14,29 @@ class MemoryIndex:
         n_neighbors: int = 1,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         query_chunk_size: int = 8192,
+        bm_bmodel_path: Optional[str] = None,
+        bm_device_id: int = 0,
+        bm_db_chunk_size: int = 4096,
+        bm_graph_name: Optional[str] = None,
+        bm_query_input_name: Optional[str] = None,
+        bm_database_input_name: Optional[str] = None,
+        bm_output_name: Optional[str] = None,
     ):
         self.backend = backend
         self.n_neighbors = int(n_neighbors)
         self.device = device
         self.query_chunk_size = int(query_chunk_size)
+        self.bm_bmodel_path = bm_bmodel_path
+        self.bm_device_id = int(bm_device_id)
+        self.bm_db_chunk_size = int(bm_db_chunk_size)
+        self.bm_graph_name = bm_graph_name
+        self.bm_query_input_name = bm_query_input_name
+        self.bm_database_input_name = bm_database_input_name
+        self.bm_output_name = bm_output_name
         self.memory_bank_torch: Optional[torch.Tensor] = None
         self.sklearn_index = None
         self.faiss_index = None
+        self.bm_index: Optional[BMVectorIndex] = None
 
     def _resolve_backend(self) -> str:
         if self.backend != "auto":
@@ -39,6 +56,7 @@ class MemoryIndex:
             self.memory_bank_torch = memory_bank.detach().to(self.device, dtype=torch.float32)
             self.sklearn_index = None
             self.faiss_index = None
+            self.bm_index = None
             return
 
         if backend == "faiss":
@@ -50,9 +68,28 @@ class MemoryIndex:
                 self.faiss_index = index
                 self.memory_bank_torch = None
                 self.sklearn_index = None
+                self.bm_index = None
                 return
             except Exception as exc:
                 print(f"[WARN] faiss backend unavailable, fallback to sklearn: {exc}")
+
+        if backend == "bm":
+            self.bm_index = BMVectorIndex(
+                bmodel_path=self.bm_bmodel_path or "",
+                n_neighbors=self.n_neighbors,
+                device_id=self.bm_device_id,
+                query_chunk_size=self.query_chunk_size,
+                db_chunk_size=self.bm_db_chunk_size,
+                graph_name=self.bm_graph_name,
+                query_input_name=self.bm_query_input_name,
+                database_input_name=self.bm_database_input_name,
+                output_name=self.bm_output_name,
+            )
+            self.bm_index.fit(memory_bank)
+            self.memory_bank_torch = None
+            self.sklearn_index = None
+            self.faiss_index = None
+            return
 
         self.sklearn_index = NearestNeighbors(
             n_neighbors=self.n_neighbors,
@@ -62,6 +99,7 @@ class MemoryIndex:
         self.sklearn_index.fit(mb_cpu)
         self.memory_bank_torch = None
         self.faiss_index = None
+        self.bm_index = None
 
     @torch.no_grad()
     def kneighbors(self, queries: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
@@ -74,6 +112,9 @@ class MemoryIndex:
             q = queries.detach().cpu().float().numpy()
             d2, inds = self.faiss_index.search(q, self.n_neighbors)
             return np.sqrt(np.maximum(d2, 0.0), dtype=np.float32), inds.astype(np.int64)
+
+        if backend == "bm" and self.bm_index is not None:
+            return self.bm_index.kneighbors(queries)
 
         if self.sklearn_index is None:
             raise ValueError("NN index not built.")

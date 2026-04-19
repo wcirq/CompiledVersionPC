@@ -53,6 +53,13 @@ class VisionMemoryEngine:
         knn_neighbors: int = 1,
         knn_backend: str = "auto",
         knn_query_chunk_size: int = 8192,
+        bm_bmodel_path: Optional[str] = None,
+        bm_device_id: int = 0,
+        bm_db_chunk_size: int = 4096,
+        bm_graph_name: Optional[str] = None,
+        bm_query_input_name: Optional[str] = None,
+        bm_database_input_name: Optional[str] = None,
+        bm_output_name: Optional[str] = None,
         use_amp: bool = False,
         enable_train_augment: bool = True,
         aug_keep_original_count: int = 1,
@@ -91,6 +98,13 @@ class VisionMemoryEngine:
         self.knn_neighbors = int(knn_neighbors)
         self.knn_backend = knn_backend
         self.knn_query_chunk_size = int(knn_query_chunk_size)
+        self.bm_bmodel_path = bm_bmodel_path
+        self.bm_device_id = int(bm_device_id)
+        self.bm_db_chunk_size = int(bm_db_chunk_size)
+        self.bm_graph_name = bm_graph_name
+        self.bm_query_input_name = bm_query_input_name
+        self.bm_database_input_name = bm_database_input_name
+        self.bm_output_name = bm_output_name
         self.use_amp = bool(use_amp and torch.cuda.is_available() and "cuda" in str(device))
 
         self.enable_train_augment = bool(enable_train_augment)
@@ -316,6 +330,13 @@ class VisionMemoryEngine:
             n_neighbors=self.knn_neighbors,
             device=self.device,
             query_chunk_size=self.knn_query_chunk_size,
+            bm_bmodel_path=self.bm_bmodel_path,
+            bm_device_id=self.bm_device_id,
+            bm_db_chunk_size=self.bm_db_chunk_size,
+            bm_graph_name=self.bm_graph_name,
+            bm_query_input_name=self.bm_query_input_name,
+            bm_database_input_name=self.bm_database_input_name,
+            bm_output_name=self.bm_output_name,
         )
         self.memory_index.fit(self.memory_bank)
 
@@ -677,6 +698,13 @@ class VisionMemoryEngine:
                     "knn_neighbors": self.knn_neighbors,
                     "knn_backend": self.knn_backend,
                     "knn_query_chunk_size": self.knn_query_chunk_size,
+                    "bm_bmodel_path": self.bm_bmodel_path,
+                    "bm_device_id": self.bm_device_id,
+                    "bm_db_chunk_size": self.bm_db_chunk_size,
+                    "bm_graph_name": self.bm_graph_name,
+                    "bm_query_input_name": self.bm_query_input_name,
+                    "bm_database_input_name": self.bm_database_input_name,
+                    "bm_output_name": self.bm_output_name,
                     "use_amp": self.use_amp,
                     "enable_train_augment": self.enable_train_augment,
                     "aug_keep_original_count": self.aug_keep_original_count,
@@ -742,6 +770,13 @@ class VisionMemoryEngine:
         self.knn_neighbors = config.get("knn_neighbors", self.knn_neighbors)
         self.knn_backend = config.get("knn_backend", self.knn_backend)
         self.knn_query_chunk_size = config.get("knn_query_chunk_size", self.knn_query_chunk_size)
+        self.bm_bmodel_path = config.get("bm_bmodel_path", self.bm_bmodel_path)
+        self.bm_device_id = int(config.get("bm_device_id", self.bm_device_id))
+        self.bm_db_chunk_size = int(config.get("bm_db_chunk_size", self.bm_db_chunk_size))
+        self.bm_graph_name = config.get("bm_graph_name", self.bm_graph_name)
+        self.bm_query_input_name = config.get("bm_query_input_name", self.bm_query_input_name)
+        self.bm_database_input_name = config.get("bm_database_input_name", self.bm_database_input_name)
+        self.bm_output_name = config.get("bm_output_name", self.bm_output_name)
         self.use_amp = bool(config.get("use_amp", self.use_amp))
 
         self.enable_train_augment = bool(config.get("enable_train_augment", self.enable_train_augment))

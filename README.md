@@ -54,6 +54,26 @@ pip install cython setuptools torch torchvision opencv-python numpy scikit-learn
 
 如果你要使用 `faiss` 后端，需要额外安装对应版本的 `faiss`。
 
+如果你要使用 `bm` 后端，需要在 BM1684 环境中安装 Sophon SDK / runtime，并提供一个用于矩阵相似度计算的 `bmodel`。
+该 `bmodel` 需要满足：
+
+- 图中至少有两个输入：查询向量 `[Q, D]` 和库向量 `[N, D]`
+- 输出至少有一个，且第一路输出可解析为 `[Q, N]` 的相似度矩阵
+- `D` 需要与模型中的 embedding 维度一致
+
+启用示例：
+
+```bash
+python main.py detect \
+  --model_path memory_model.pt \
+  --input /path/to/test.jpg \
+  --output ./output \
+  --knn_backend bm \
+  --bm_bmodel_path /path/to/vector_gemm.bmodel \
+  --bm_device_id 0 \
+  --bm_db_chunk_size 4096
+```
+
 如果你的环境里没有 C/C++ 编译工具链，编译二进制扩展时会失败。
 
 常见要求：

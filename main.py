@@ -58,10 +58,25 @@ def build_parser():
     parser.add_argument("--knn_neighbors", type=int, default=1, help="KNN 近邻数量")
 
     # 近邻检索后端，auto 会在 CUDA 上优先选 torch，否则选 sklearn。
-    parser.add_argument("--knn_backend", type=str, default="auto", choices=["auto", "torch", "sklearn", "faiss"], help="KNN 后端：auto、torch、sklearn 或 faiss")
+    parser.add_argument("--knn_backend", type=str, default="auto", choices=["auto", "torch", "sklearn", "faiss", "bm"], help="KNN 后端：auto、torch、sklearn、faiss 或 bm")
 
     # KNN 分块查询大小，用于控制显存或内存占用。
     parser.add_argument("--knn_query_chunk_size", type=int, default=8192, help="KNN 分块查询大小，用于控制内存占用")
+
+    # BM1684 KNN 后端使用的 bmodel 路径。该 bmodel 应接收 [Q, D] 和 [N, D] 两个输入，并输出 [Q, N] 相似度矩阵。
+    parser.add_argument("--bm_bmodel_path", type=str, default=None, help="BM1684 KNN bmodel 路径，启用 --knn_backend bm 时必填")
+
+    # BM1684 设备号。
+    parser.add_argument("--bm_device_id", type=int, default=0, help="BM1684 设备号")
+
+    # BM1684 上数据库分块大小，用于控制单次矩阵乘规模。
+    parser.add_argument("--bm_db_chunk_size", type=int, default=4096, help="BM1684 KNN 数据库分块大小")
+
+    # 以下参数用于适配不同 bmodel 的 graph / 输入输出名字；不填时默认取第一个 graph 和默认的前两个输入、第一路输出。
+    parser.add_argument("--bm_graph_name", type=str, default=None, help="BM1684 KNN graph 名称")
+    parser.add_argument("--bm_query_input_name", type=str, default=None, help="BM1684 KNN 查询输入名")
+    parser.add_argument("--bm_database_input_name", type=str, default=None, help="BM1684 KNN 数据库输入名")
+    parser.add_argument("--bm_output_name", type=str, default=None, help="BM1684 KNN 输出名")
 
     # 在 CUDA 路径上启用混合精度。
     parser.add_argument("--use_amp", action="store_true", help="启用混合精度推理，仅在 CUDA 下生效")
@@ -217,6 +232,13 @@ def build_engine(args):
         knn_neighbors=args.knn_neighbors,
         knn_backend=args.knn_backend,
         knn_query_chunk_size=args.knn_query_chunk_size,
+        bm_bmodel_path=args.bm_bmodel_path,
+        bm_device_id=args.bm_device_id,
+        bm_db_chunk_size=args.bm_db_chunk_size,
+        bm_graph_name=args.bm_graph_name,
+        bm_query_input_name=args.bm_query_input_name,
+        bm_database_input_name=args.bm_database_input_name,
+        bm_output_name=args.bm_output_name,
         use_amp=args.use_amp,
         enable_train_augment=args.enable_train_augment,
         aug_keep_original_count=args.aug_keep_original_count,
@@ -248,6 +270,9 @@ def build_engine(args):
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.knn_backend == "bm" and not args.bm_bmodel_path:
+        parser.error("knn_backend=bm requires --bm_bmodel_path")
 
     crop_size = parse_tuple2(args.crop_size, "crop_size")
     stride = parse_tuple2(args.stride, "stride") if args.stride is not None else None
