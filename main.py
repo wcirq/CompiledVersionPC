@@ -31,13 +31,13 @@ def build_parser():
     parser.add_argument("--backbone", type=str, default="resnet50", help="特征提取主干网络，当前仅支持 resnet50")
 
     # 每个裁剪块送入主干网络前会被缩放到该尺寸。
-    parser.add_argument("--input_size", type=int, nargs=2, default=[240, 240], metavar=("H", "W"), help="主干网络输入尺寸，高和宽，例如 --input_size 240 240")
+    parser.add_argument("--input_size", type=int, nargs=2, default=[640, 640], metavar=("H", "W"), help="主干网络输入尺寸，高和宽，例如 --input_size 240 240")
 
     # 滑窗裁剪大小，越大上下文越多，但空间定位会更粗。
-    parser.add_argument("--crop_size", type=int, nargs=2, default=[160, 160], metavar=("H", "W"), help="滑窗裁剪尺寸，高和宽，例如 --crop_size 160 160")
+    parser.add_argument("--crop_size", type=int, nargs=2, default=[640, 640], metavar=("H", "W"), help="滑窗裁剪尺寸，高和宽，例如 --crop_size 160 160")
 
     # 滑窗步长；如果不填，内部默认使用 crop_size 的一半。
-    parser.add_argument("--stride", type=int, nargs=2, default=None, metavar=("H", "W"), help="滑窗步长，高和宽；不填时默认使用 crop_size 的一半")
+    parser.add_argument("--stride", type=int, nargs=2, default=[512, 512], metavar=("H", "W"), help="滑窗步长，高和宽；不填时默认使用 crop_size 的一半")
 
     # 训练时每次并行处理多少个裁剪块。
     parser.add_argument("--batch_size", type=int, default=32, help="训练构建记忆库时的批大小")
@@ -102,6 +102,9 @@ def build_parser():
     # 阈值校准时最多采样多少个热力图数值，避免内存过大。
     parser.add_argument("--max_heatmap_samples", type=int, default=2_000_000, help="阈值校准时热力图采样上限")
 
+    # 若开启，则阈值校准时跳过热力图统计，只计算全局分数阈值。
+    parser.add_argument("--fast_calibrate", action="store_true", help="快速阈值校准：跳过热力图统计，只计算推荐阈值")
+
     # 若开启，则输出热力图时把阈值以下的位置强制置零。
     parser.add_argument("--heatmap_zero_below_threshold", action="store_true", help="将阈值以下的热力图值置零")
 
@@ -126,6 +129,15 @@ def build_parser():
 
     # 流式写盘时的临时缓存目录。
     parser.add_argument("--stream_dir", type=str, default="./embedding_cache", help="embedding 流式缓存目录")
+
+    # 在线训练时允许在候选池中保留的最大 embedding 数；大于 0 时启用在线压缩，避免缓存目录无限增长。
+    parser.add_argument("--stream_max_embeddings", type=int, default=0, help="流式训练时允许暂存的最大 embedding 数，0 表示关闭在线压缩")
+
+    # 在线压缩触发后保留的比例。
+    parser.add_argument("--online_compress_ratio", type=float, default=0.5, help="在线压缩触发后保留比例，范围 (0, 1]")
+
+    # 新 embedding 到当前候选池最近邻距离低于该阈值时直接丢弃。
+    parser.add_argument("--online_novelty_threshold", type=float, default=0.0, help="在线去重阈值；大于 0 时仅保留与当前候选池足够不同的 embedding")
 
     # 训练前是否清空流式缓存目录。
     # 注意：这里使用的是 store_false 语义，传入该参数后反而会关闭清理。
@@ -257,6 +269,9 @@ def main():
             random_seed=args.random_seed,
             stream_to_disk=args.stream_to_disk,
             stream_dir=args.stream_dir,
+            stream_max_embeddings=args.stream_max_embeddings,
+            online_compress_ratio=args.online_compress_ratio,
+            online_novelty_threshold=args.online_novelty_threshold,
             cleanup_stream_dir=args.cleanup_stream_dir,
             infer_long_side=args.infer_long_side,
         )
@@ -278,6 +293,7 @@ def main():
             max_heatmap_samples=args.max_heatmap_samples,
             detect_batch_size=args.detect_batch_size,
             infer_long_side=args.infer_long_side,
+            fast_calibrate=args.fast_calibrate,
         )
         print(f"Recommended threshold = {thr:.6f}")
         engine.save(args.model_path)

@@ -138,6 +138,73 @@ class VisionMemoryEngine:
         self.heatmap_vis_min: Optional[float] = None
         self.heatmap_vis_max: Optional[float] = None
 
+    def _compress_to_size(self, features: torch.Tensor, target_size: int) -> torch.Tensor:
+        n_total = int(features.shape[0])
+        target_size = max(1, int(target_size))
+        if n_total <= target_size:
+            return features
+        return self._compress_memory(features, sampling_ratio=float(target_size) / float(n_total))
+
+    def _filter_novel_embeddings(
+        self,
+        candidates: torch.Tensor,
+        reference: Optional[torch.Tensor],
+        min_distance: float,
+    ) -> torch.Tensor:
+        if candidates is None or candidates.ndim != 2 or candidates.shape[0] == 0:
+            return candidates
+        if reference is None or reference.ndim != 2 or reference.shape[0] == 0:
+            return candidates
+        if min_distance is None or float(min_distance) <= 0.0:
+            return candidates
+
+        refs = reference.detach().cpu().float().contiguous()
+        keep_masks = []
+        query_chunk = max(1, int(self.knn_query_chunk_size))
+        ref_chunk = max(1, min(int(self.knn_query_chunk_size), int(refs.shape[0])))
+
+        for st in range(0, candidates.shape[0], query_chunk):
+            ed = min(st + query_chunk, candidates.shape[0])
+            query = candidates[st:ed].detach().cpu().float().contiguous()
+            min_dist = None
+            for rst in range(0, refs.shape[0], ref_chunk):
+                red = min(rst + ref_chunk, refs.shape[0])
+                dist = torch.cdist(query, refs[rst:red], p=2)
+                cur = dist.min(dim=1).values
+                min_dist = cur if min_dist is None else torch.minimum(min_dist, cur)
+            keep_masks.append(min_dist > float(min_distance))
+
+        keep_mask = torch.cat(keep_masks, dim=0)
+        return candidates[keep_mask]
+
+    def _save_embedding_snapshot(self, save_dir: str, embeddings: torch.Tensor):
+        cleanup_dir(save_dir)
+        save_embeddings_stream_init(save_dir, embed_dim=int(embeddings.shape[1]))
+        save_embeddings_stream_append(save_dir, embeddings)
+
+    def _update_online_sample_pool(
+        self,
+        pool: Optional[np.ndarray],
+        values: np.ndarray,
+        max_samples: int,
+        rng: np.random.Generator,
+    ) -> Optional[np.ndarray]:
+        if values is None:
+            return pool
+        values = np.asarray(values, dtype=np.float32).reshape(-1)
+        if values.size == 0:
+            return pool
+        if max_samples is None or max_samples <= 0:
+            return values if pool is None else np.concatenate([pool, values], axis=0)
+        if values.size > max_samples:
+            values = values[rng.choice(values.size, size=max_samples, replace=False)]
+        if pool is None or pool.size == 0:
+            return values
+        merged = np.concatenate([pool, values], axis=0)
+        if merged.size > max_samples:
+            merged = merged[rng.choice(merged.size, size=max_samples, replace=False)]
+        return merged
+
     def _init_projector(self):
         if self.target_embed_dimension <= 0:
             return None
@@ -284,24 +351,35 @@ class VisionMemoryEngine:
         stream_dir: str = "./embedding_cache",
         cleanup_stream_dir: bool = True,
         infer_long_side: int = 0,
+        stream_max_embeddings: int = 0,
+        online_compress_ratio: float = 0.5,
+        online_novelty_threshold: float = 0.0,
     ) -> int:
         image_paths = list_images(image_dir)
         if not image_paths:
             raise ValueError(f"No images found in {image_dir}")
+        if stream_max_embeddings < 0:
+            raise ValueError("stream_max_embeddings must be >= 0.")
+        if online_compress_ratio <= 0 or online_compress_ratio > 1.0:
+            raise ValueError("online_compress_ratio must be in (0, 1].")
 
         np.random.seed(random_seed)
         self.train_image_paths = image_paths
         all_embeddings = []
         batch_crops = []
         total_embeddings_written = 0
+        online_bank: Optional[torch.Tensor] = None
+        online_mode = bool(stream_to_disk and stream_max_embeddings > 0)
 
-        if stream_to_disk:
+        if stream_to_disk and not online_mode:
             if cleanup_stream_dir:
                 cleanup_dir(stream_dir)
             save_embeddings_stream_init(stream_dir, embed_dim=self.target_embed_dimension)
+        elif stream_to_disk and online_mode and cleanup_stream_dir:
+            cleanup_dir(stream_dir)
 
         def flush_batch():
-            nonlocal batch_crops, total_embeddings_written
+            nonlocal batch_crops, total_embeddings_written, online_bank
             if not batch_crops:
                 return
             batch = self._images_to_tensor_batch(batch_crops)
@@ -309,7 +387,14 @@ class VisionMemoryEngine:
             embed_dim = int(embs.shape[2])
             embs = embs.reshape(-1, embed_dim).cpu().float()
             total_embeddings_written += int(embs.shape[0])
-            if stream_to_disk:
+            if online_mode:
+                embs = self._filter_novel_embeddings(embs, online_bank, online_novelty_threshold)
+                if embs.shape[0] > 0:
+                    online_bank = embs if online_bank is None else torch.cat([online_bank, embs], dim=0)
+                    if online_bank.shape[0] > stream_max_embeddings:
+                        target_size = min(stream_max_embeddings, max(1, int(online_bank.shape[0] * online_compress_ratio)))
+                        online_bank = self._compress_to_size(online_bank, target_size)
+            elif stream_to_disk:
                 save_embeddings_stream_append(stream_dir, embs)
             else:
                 all_embeddings.append(embs)
@@ -339,7 +424,15 @@ class VisionMemoryEngine:
                 print(f"[WARN] Failed processing {img_path}: {exc}")
         flush_batch()
 
-        if stream_to_disk:
+        if online_mode:
+            if online_bank is None or online_bank.shape[0] == 0:
+                raise ValueError("No embeddings extracted from training images.")
+            if stream_to_disk:
+                self._save_embedding_snapshot(stream_dir, online_bank)
+            embeddings_tensor = online_bank
+            if max_embeddings and embeddings_tensor.shape[0] > max_embeddings:
+                embeddings_tensor = self._compress_to_size(embeddings_tensor, max_embeddings)
+        elif stream_to_disk:
             if total_embeddings_written <= 0:
                 raise ValueError("No embeddings extracted from training images.")
             embeddings_tensor = load_random_embeddings_from_chunks(stream_dir, max_embeddings=max_embeddings, seed=random_seed)
@@ -415,32 +508,35 @@ class VisionMemoryEngine:
         max_heatmap_samples: int = 2_000_000,
         detect_batch_size: int = 8,
         infer_long_side: int = 0,
+        fast_calibrate: bool = False,
     ) -> float:
         image_paths = list_images(image_dir)
         if not image_paths:
             raise ValueError(f"No images found in {image_dir}")
 
         scores = []
-        sampled_heat_values = []
+        sampled_heat_values: Optional[np.ndarray] = None
         rng = np.random.default_rng(42)
 
         for img_path in tqdm(image_paths, desc="Calibrating threshold"):
             image_rgb = read_image_rgb(img_path)
             score, heatmap = self._compute_score_map(image_rgb, crop_size, stride, detect_batch_size, infer_long_side)
             scores.append(score)
-            flat = heatmap.reshape(-1).astype(np.float32)
-            if flat.size > 0:
-                sampled_heat_values.append(flat)
+            if not fast_calibrate:
+                sampled_heat_values = self._update_online_sample_pool(
+                    pool=sampled_heat_values,
+                    values=heatmap,
+                    max_samples=max_heatmap_samples,
+                    rng=rng,
+                )
 
         scores = np.array(scores, dtype=np.float32)
         self.score_mean = float(scores.mean())
         self.score_std = float(scores.std())
         self.recommended_threshold = float(np.quantile(scores, quantile))
 
-        if sampled_heat_values:
-            heat_values = np.concatenate(sampled_heat_values, axis=0)
-            if heat_values.size > max_heatmap_samples:
-                heat_values = heat_values[rng.choice(heat_values.size, size=max_heatmap_samples, replace=False)]
+        if sampled_heat_values is not None and sampled_heat_values.size > 0:
+            heat_values = sampled_heat_values
             self.heatmap_mean = float(heat_values.mean())
             self.heatmap_std = float(heat_values.std())
             qv = float(np.quantile(heat_values, heatmap_quantile))

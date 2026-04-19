@@ -150,6 +150,24 @@ python main.py calibrate_threshold \
 
 标定完成后会把推荐阈值写回模型文件。
 
+如果只是想更快得到一个推荐阈值，可以开启快速模式，跳过热力图统计：
+
+```bash
+python main.py calibrate_threshold \
+  --model_path memory_model.pt \
+  --input /path/to/val_normal_images \
+  --quantile 0.99 \
+  --fast_calibrate \
+  --infer_long_side 640 \
+  --stride 224 224 \
+  --max_heatmap_samples 200000
+```
+
+说明：
+
+- `--fast_calibrate` 只保留全局分数统计，通常会比完整热力图统计更轻
+- 即使不开启 `--fast_calibrate`，现在热力图统计也会使用固定大小的在线采样池，不再把所有 heatmap 值一直累积到内存里
+
 ### 5. 追加新的正常样本
 
 ```bash
@@ -272,6 +290,44 @@ pip install cython setuptools
 python build_engine.py --clean --target-arch aarch64
 ```
 
+### 2.1 边缘设备训练建议
+
+如果部署设备只有大约 `6GB` 内存和 `10GB` 剩余磁盘，不建议直接使用默认训练参数。当前训练默认会先把大量 embedding 写到 `stream_dir`，数据量一大时磁盘会先被占满。
+
+推荐开启在线压缩，把候选 embedding 数量限制在一个固定上限内，例如：
+
+```bash
+python main.py train \
+  --train_dir templates \
+  --save_model memory_model_edge.pt \
+  --device cpu \
+  --batch_size 2 \
+  --input_size 192 192 \
+  --crop_size 224 224 \
+  --stride 224 224 \
+  --infer_long_side 640 \
+  --target_embed_dimension 256 \
+  --max_embeddings 30000 \
+  --memory_ratio 0.08 \
+  --stream_dir ./embedding_cache \
+  --stream_max_embeddings 12000 \
+  --online_compress_ratio 0.5 \
+  --online_novelty_threshold 0.15 \
+  --enable_train_augment
+```
+
+参数含义：
+
+- `--stream_max_embeddings`：在线候选池上限，超过后立即压缩，不再让 `stream_dir` 无限增长
+- `--online_compress_ratio`：超过上限后保留的比例，例如 `0.5` 表示压缩到一半
+- `--online_novelty_threshold`：新 embedding 与当前候选池最近邻距离太小就丢弃，用于在线去重
+
+注意：
+
+- `--enable_train_augment` 这个参数名字是反的，传入它会关闭训练增强
+- `--stream_to_disk` 这个参数名字也是反的，传入它会关闭默认的流式写盘
+- 如果训练集很大，仍然更建议在资源更充足的机器上训练后，把 `memory_model.pt` 部署到边缘设备上做推理
+
 ### 3. 编译输出位置
 
 编译完成后，二进制文件会放到：
@@ -384,12 +440,41 @@ python main.py -h
 
 ```bash
 python main.py train --train_dir templates --save_model memory_model.pt
+
+python main.py train \
+  --train_dir templates \
+  --save_model memory_model_edge.pt \
+  --device cpu \
+  --batch_size 2 \
+  --input_size 640 640 \
+  --crop_size 640 640 \
+  --stride 512 512 \
+  --infer_long_side 640 \
+  --target_embed_dimension 256 \
+  --max_embeddings 30000 \
+  --memory_ratio 0.08 \
+  --stream_dir ./embedding_cache \
+  --stream_max_embeddings 12000 \
+  --online_compress_ratio 0.5 \
+  --online_novelty_threshold 0.15 \
+  --enable_train_augment
 ```
 
 单图检测：
 
 ```bash
 python main.py detect --model_path memory_model.pt --input ./test_imgs/1.jpg --output ./output
+python main.py detect --model_path memory_model_edge.pt --input ./test_imgs/1.jpg --output ./output
+python main.py detect \
+  --model_path memory_model_edge.pt \
+  --input_size 640 640 \
+  --crop_size 640 640 \
+  --stride 512 512 \
+  --input ./test_imgs/1.jpg \
+  --output ./output \
+  --select_roi \
+  --heatmap_zero_below_threshold \
+  --threshold 10
 ```
 
 批量检测：
@@ -402,6 +487,16 @@ python main.py detect_batch --model_path memory_model.pt --input ./test_imgs --o
 
 ```bash
 python main.py calibrate_threshold --model_path memory_model.pt --input test_imgs
+python main.py calibrate_threshold --model_path memory_model_edge.pt --input test_imgs
+python main.py calibrate_threshold --model_path memory_model_edge.pt --input templates
+python main.py calibrate_threshold \
+--model_path memory_model_edge.pt \
+--input templates \
+--fast_calibrate \
+--infer_long_side 640 \
+--input_size 640 640 \
+--crop_size 640 640 \
+--stride 512 512 
 ```
 
 编译：
