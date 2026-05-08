@@ -9,7 +9,10 @@ dist_binary/
 datasets/
 result/
 runs/
+*/build/
+*/dist/
 新建文件夹/
+store_data/
 *.so
 .idea/
 
@@ -23,6 +26,7 @@ embedding_cache/
 *.pth
 *.ckpt
 *.zip
+tip.md
 
 # Generated outputs
 output/
