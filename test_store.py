@@ -9,6 +9,7 @@ def test_store_init():
         root_dir="./store_data",
         autostart_service=True,
         service_port=55555,
+        yolo_conf_threshold=0.8
     )
 
     print(store.service_info)
