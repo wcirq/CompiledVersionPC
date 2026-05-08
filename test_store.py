@@ -1,4 +1,8 @@
+import base64
 import time
+
+import cv2
+import numpy as np
 
 def test_store_init():
 
@@ -51,9 +55,27 @@ def test_store_predict(store, model_id=None):
 
     print(result)
 
+    heatmap_base64 = result.get("heatmap_base64")
+    if not heatmap_base64:
+        print("detect_image 未返回 heatmap_base64")
+        return
+
+    image_bytes = base64.b64decode(heatmap_base64)
+    image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+    heatmap_image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+
+    if heatmap_image is None:
+        print("heatmap_base64 解码失败")
+        return
+
+    cv2.imshow("detect_image heatmap", heatmap_image)
+    print("按任意键关闭热力图窗口")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
 
 if __name__ == '__main__':
-    model_id = "model_e8ad3cf30cd14a10"
+    model_id = "model_065bc310c38147eb"
     store = test_store_init()
     # model_id = test_store_train(store)
     test_store_predict(store, model_id=model_id)

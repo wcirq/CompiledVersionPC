@@ -33,5 +33,5 @@ output/
 output_batch/
 
 # Local datasets and test assets
-templates/
-test_imgs/
+templates*/
+test_imgs*/
