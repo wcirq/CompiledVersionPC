@@ -6,6 +6,10 @@ __pycache__/
 build/
 dist/
 dist_binary/
+datasets/
+result/
+runs/
+新建文件夹/
 *.so
 .idea/
 
