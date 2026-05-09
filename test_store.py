@@ -1,5 +1,4 @@
 import base64
-import time
 import cv2
 import numpy as np
 from store_core import TrainRoofAnomalyStore
@@ -18,6 +17,22 @@ def _resize_for_display(image, max_width=1280, max_height=720):
             interpolation=cv2.INTER_AREA,
         )
     return image
+
+
+def _get_annotation_style(image):
+    height, width = image.shape[:2]
+    base = max(height, width)
+    line_thickness = max(2, int(round(base / 500)))
+    box_thickness = max(2, int(round(base / 450)))
+    font_scale = max(0.7, base / 1400.0)
+    font_thickness = max(2, int(round(base / 700)))
+    return {
+        "roof_thickness": line_thickness,
+        "anomaly_thickness": line_thickness,
+        "box_thickness": box_thickness,
+        "font_scale": font_scale,
+        "font_thickness": font_thickness,
+    }
 
 
 def test_store_init():
@@ -85,34 +100,56 @@ def test_store_predict(store: TrainRoofAnomalyStore, model_id=None):
         print(f"原图读取失败: {image_path}")
         return
 
+    style = _get_annotation_style(annotated_image)
+
     # 绿色绘制车顶分割轮廓。
     for contour in result.get("roof_contours", []):
         contour_array = np.array(contour, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.polylines(annotated_image, [contour_array], True, (0, 255, 0), 2)
+        cv2.polylines(
+            annotated_image,
+            [contour_array],
+            True,
+            (0, 255, 0),
+            style["roof_thickness"],
+        )
 
     # 红色绘制异常区域轮廓，黄色绘制外接框和分数。
     for index, region in enumerate(result.get("anomaly_regions", []), start=1):
         contour = region.get("contour", [])
         if contour:
             contour_array = np.array(contour, dtype=np.int32).reshape(-1, 1, 2)
-            cv2.polylines(annotated_image, [contour_array], True, (0, 0, 255), 2)
+            cv2.polylines(
+                annotated_image,
+                [contour_array],
+                True,
+                (0, 0, 255),
+                style["anomaly_thickness"],
+            )
 
         box = region.get("box", [])
         if len(box) == 4:
             x1, y1, x2, y2 = box
-            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.rectangle(
+                annotated_image,
+                (x1, y1),
+                (x2, y2),
+                (0, 255, 255),
+                style["box_thickness"],
+            )
             score = region.get("score")
             label = f"A{index}"
             if score is not None:
                 label = f"{label}:{score:.3f}"
+            text_y = max(y1 - 8, 20)
             cv2.putText(
                 annotated_image,
                 label,
-                (x1, max(y1 - 8, 20)),
+                (x1, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                style["font_scale"],
                 (0, 255, 255),
-                2,
+                style["font_thickness"],
+                cv2.LINE_AA,
             )
 
     print(result)
@@ -126,9 +163,13 @@ def test_store_predict(store: TrainRoofAnomalyStore, model_id=None):
 
 if __name__ == '__main__':
     model_id = "model_6a9a9dbcdfb7443e"
-    store = test_store_init()
+    store = TrainRoofAnomalyStore(
+        root_dir="./store_data",
+        autostart_service=True,
+        service_port=55555,
+        yolo_conf_threshold=0.8,
+    )
     # model_id = test_store_train(store)
     test_store_predict(store, model_id=model_id)
 
-    while True:
-        time.sleep(1)
+    store.serve_forever()
