@@ -69,8 +69,6 @@ def test_store_predict(store, model_id=None):
         include_heatmap_base64=True,
     )
 
-    print(result)
-
     heatmap_base64 = result.get("heatmap_base64")
     if not heatmap_base64:
         print("detect_image 未返回 heatmap_base64")
@@ -133,7 +131,7 @@ def test_store_predict(store, model_id=None):
 if __name__ == '__main__':
     model_id = "model_065bc310c38147eb"
     store = test_store_init()
-    # model_id = test_store_train(store)
+    model_id = test_store_train(store)
     test_store_predict(store, model_id=model_id)
 
     while True:
