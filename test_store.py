@@ -1,8 +1,9 @@
 import base64
 import time
-
 import cv2
 import numpy as np
+from store_core import TrainRoofAnomalyStore
+from store_core.schemas import RuntimeOptions
 
 
 def _resize_for_display(image, max_width=1280, max_height=720):
@@ -20,10 +21,6 @@ def _resize_for_display(image, max_width=1280, max_height=720):
 
 
 def test_store_init():
-
-    from store_core import TrainRoofAnomalyStore
-    from store_core.schemas import RuntimeOptions
-
     store = TrainRoofAnomalyStore(
         root_dir="./store_data",
         autostart_service=True,
@@ -35,8 +32,7 @@ def test_store_init():
     return store
 
 
-def test_store_train(store):
-    from store_core.schemas import RuntimeOptions
+def test_store_train(store: TrainRoofAnomalyStore):
 
     def on_progress(event: dict):
         print(event)
@@ -61,8 +57,8 @@ def test_store_train(store):
     return result["model_id"]
 
 
-def test_store_predict(store, model_id=None):
-    image_path = "test_imgs/1.jpg"
+def test_store_predict(store: TrainRoofAnomalyStore, model_id=None):
+    image_path = "test_imgs/2.jpg"
     result = store.detect_image(
         model_id="model_e8ad3cf30cd14a10" if model_id is None else model_id,
         image_path=image_path,
