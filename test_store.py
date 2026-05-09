@@ -129,9 +129,9 @@ def test_store_predict(store, model_id=None):
 
 
 if __name__ == '__main__':
-    model_id = "model_065bc310c38147eb"
+    model_id = "model_6a9a9dbcdfb7443e"
     store = test_store_init()
-    model_id = test_store_train(store)
+    # model_id = test_store_train(store)
     test_store_predict(store, model_id=model_id)
 
     while True:
