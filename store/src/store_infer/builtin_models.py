@@ -7,8 +7,9 @@ BUILTIN_MODELS = [
         "class_names": ["fire", "smoke"],
         "conf_threshold": 0.25,
         "iou_threshold": 0.45,
+        "imgsz": 640,
         "max_det": 100,
         "enabled": True,
-        "description": "YOLOv11 fire and smoke object detector.",
+        "description": "火焰与烟雾目标检测器"
     }
 ]

@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Store Console 管理与推理测试台</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260512a">
+  <title>列车顶视觉检测平台</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260513g">
 </head>
 <body>
   <div class="page">
     <aside class="sidebar">
       <div class="brand">
-        <h1>Store Console</h1>
-        <p>异物检测管理与 YOLOv11 推理测试</p>
+        <h1>列车顶视觉检测平台</h1>
+        <p>模型管理、检测服务与效果测试</p>
       </div>
       <div class="view-switch">
         <button id="openStoreViewBtn" class="view-switch-button active" type="button">异物管理</button>
-        <button id="openInferViewBtn" class="view-switch-button" type="button">YOLOv11 测试</button>
+        <button id="openInferViewBtn" class="view-switch-button" type="button">检测测试</button>
       </div>
       <div id="storeSidebarPanel" class="sidebar-panel">
         <button id="refreshModelsBtn">刷新模型</button>
@@ -37,8 +37,8 @@
         <div id="modelsList" class="models-list"></div>
       </div>
       <div id="inferSidebarPanel" class="sidebar-panel hidden">
-        <button id="refreshInferenceModelsBtn" type="button">刷新推理模型</button>
-        <div class="section-hint sidebar-hint">选择一个内置 YOLOv11 模型后，在右侧上传图片测试效果。</div>
+        <button id="refreshInferenceModelsBtn" type="button">刷新检测模型</button>
+        <div class="section-hint sidebar-hint">选择一个检测模型后，在右侧上传图片测试效果。</div>
         <div id="inferenceModelsList" class="models-list"></div>
       </div>
     </aside>
@@ -137,8 +137,8 @@
       <div id="inferWorkbench" class="workspace hidden">
         <section class="panel">
           <div class="panel-head">
-            <h2>YOLOv11 推理测试</h2>
-            <div id="inferResultMeta" class="append-heatmap-meta">请先选择推理模型</div>
+            <h2>检测测试</h2>
+            <div id="inferResultMeta" class="append-heatmap-meta">请先选择检测模型</div>
           </div>
           <div class="inference-layout">
             <div class="stack">
@@ -150,6 +150,10 @@
                 <label class="append-option-field" for="inferIouThreshold">
                   <span>IoU Threshold</span>
                   <input id="inferIouThreshold" type="number" min="0" max="1" step="0.01" placeholder="留空则使用模型默认值">
+                </label>
+                <label class="append-option-field" for="inferImgsz">
+                  <span>Input Size</span>
+                  <input id="inferImgsz" type="number" min="32" step="32" placeholder="留空则使用模型默认值">
                 </label>
                 <label class="append-option-field" for="inferMaxDet">
                   <span>Max Det</span>
@@ -171,7 +175,7 @@
               <label id="inferUploadEntry" for="inferImageFile" class="upload-entry-card">
                 <span class="upload-entry-icon" aria-hidden="true">Y</span>
                 <span class="upload-entry-title">上传测试图片</span>
-                <span id="inferUploadSubtitle" class="upload-entry-subtitle">请先选择推理模型</span>
+                <span id="inferUploadSubtitle" class="upload-entry-subtitle">请先选择检测模型</span>
               </label>
             </div>
             <div class="panel subtle-panel">
@@ -190,11 +194,11 @@
           <div class="detect-result-grid">
             <div class="detect-result-card">
               <h3>原图</h3>
-              <img id="inferOriginalImage" class="preview-image detect-result-image hidden" alt="推理原图">
+              <img id="inferOriginalImage" class="preview-image detect-result-image hidden" alt="检测原图">
             </div>
             <div class="detect-result-card">
               <h3>可视化结果</h3>
-              <img id="inferAnnotatedImage" class="preview-image detect-result-image hidden" alt="推理可视化结果">
+              <img id="inferAnnotatedImage" class="preview-image detect-result-image hidden" alt="检测可视化结果">
             </div>
           </div>
           <pre id="inferResultJson" class="json-view inference-json">等待推理</pre>
@@ -412,6 +416,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=20260512a"></script>
+  <script src="/static/app.js?v=20260513g"></script>
 </body>
 </html>

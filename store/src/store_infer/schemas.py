@@ -14,6 +14,7 @@ class InferenceModelConfig:
     class_names: List[str]
     conf_threshold: float = 0.25
     iou_threshold: float = 0.45
+    imgsz: int = 640
     max_det: int = 100
     enabled: bool = True
     description: str = ""
@@ -30,6 +31,7 @@ class InferenceModelConfig:
             class_names=[str(item) for item in payload.get("class_names", [])],
             conf_threshold=float(payload.get("conf_threshold", 0.25)),
             iou_threshold=float(payload.get("iou_threshold", 0.45)),
+            imgsz=int(payload.get("imgsz", 640)),
             max_det=int(payload.get("max_det", 100)),
             enabled=bool(payload.get("enabled", True)),
             description=str(payload.get("description", "")),
@@ -44,6 +46,7 @@ class InferenceModelConfig:
             "class_names": list(self.class_names),
             "conf_threshold": self.conf_threshold,
             "iou_threshold": self.iou_threshold,
+            "imgsz": self.imgsz,
             "max_det": self.max_det,
             "enabled": self.enabled,
             "description": self.description,

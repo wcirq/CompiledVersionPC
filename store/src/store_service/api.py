@@ -64,6 +64,7 @@ class ModelThresholdUpdateRequest(BaseModel):
 class InferenceRequest(BaseModel):
     conf_threshold: Optional[float] = None
     iou_threshold: Optional[float] = None
+    imgsz: Optional[int] = None
     max_det: Optional[int] = None
     device: Optional[str] = None
     include_visualization_base64: bool = True
@@ -393,6 +394,7 @@ def build_app(manager) -> FastAPI:
         image_path: Optional[str] = Form(None),
         conf_threshold: Optional[float] = Form(None),
         iou_threshold: Optional[float] = Form(None),
+        imgsz: Optional[int] = Form(None),
         max_det: Optional[int] = Form(None),
         device: Optional[str] = Form(None),
         include_visualization_base64: bool = Form(True),
@@ -406,6 +408,7 @@ def build_app(manager) -> FastAPI:
                 image_bytes=image_bytes,
                 conf_threshold=conf_threshold,
                 iou_threshold=iou_threshold,
+                imgsz=imgsz,
                 max_det=max_det,
                 device=device,
                 include_visualization_base64=include_visualization_base64,

@@ -57,6 +57,13 @@ body {
   gap: 18px;
 }
 
+#inferWorkbench {
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  overflow-x: hidden;
+}
+
 .view-switch {
   margin-top: 18px;
   display: grid;
@@ -277,6 +284,8 @@ body {
   grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
   gap: 18px;
   align-items: start;
+  max-width: 1240px;
+  margin: 0 auto;
 }
 
 .inference-params-grid {
@@ -287,6 +296,12 @@ body {
 
 .inference-json {
   margin-top: 16px;
+  max-width: min(100%, 1100px);
+  justify-self: center;
+  width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .section-hint {
@@ -584,6 +599,7 @@ body {
   border: 1px solid rgba(94, 100, 95, 0.12);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.62);
+  min-width: 0;
 }
 
 .detect-result-card h3 {
@@ -598,6 +614,19 @@ body {
   justify-self: center;
   object-fit: contain;
   background: #f6f2ea;
+}
+
+#inferWorkbench .detect-result-grid {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+#inferWorkbench .detect-result-card {
+  align-content: start;
+}
+
+#inferWorkbench .detect-result-image {
+  max-height: min(320px, 34vh);
 }
 
 .edit-topbar {
@@ -927,6 +956,7 @@ button.danger {
   color: #d6ffe9;
   border-radius: 16px;
   padding: 14px;
+  max-width: 100%;
 }
 
 .pager {

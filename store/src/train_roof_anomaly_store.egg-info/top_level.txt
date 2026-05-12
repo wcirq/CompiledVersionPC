@@ -1,3 +1,4 @@
 store_core
+store_infer
 store_service
 store_web

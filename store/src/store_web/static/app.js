@@ -89,6 +89,14 @@ function setJson(id, data) {
   document.getElementById(id).textContent = JSON.stringify(data, null, 2);
 }
 
+function setInferenceResultJson(data) {
+  const payload = { ...data };
+  if (typeof payload.visualization_base64 === "string" && payload.visualization_base64) {
+    payload.visualization_base64 = `[base64 omitted, length=${payload.visualization_base64.length}]`;
+  }
+  document.getElementById("inferResultJson").textContent = JSON.stringify(payload, null, 2);
+}
+
 function openModal(id) {
   document.getElementById(id).classList.remove("hidden");
 }
@@ -276,17 +284,18 @@ function refreshInferenceEntryState() {
   rerunBtn.disabled = !enabled;
   entry.classList.toggle("disabled", !enabled);
   subtitle.textContent = enabled
-    ? "选择图片后开始 YOLOv11 推理"
-    : "请先选择推理模型";
+    ? "选择图片后开始检测"
+    : "请先选择检测模型";
   if (!enabled) {
     document.getElementById("inferConfThreshold").value = "";
     document.getElementById("inferIouThreshold").value = "";
+    document.getElementById("inferImgsz").value = "";
     document.getElementById("inferMaxDet").value = "";
     document.getElementById("inferDevice").value = "";
   }
 }
 
-function resetInferenceResultState(message = "请先选择推理模型") {
+function resetInferenceResultState(message = "请先选择检测模型") {
   document.getElementById("inferOriginalImage").src = "";
   document.getElementById("inferOriginalImage").classList.add("hidden");
   document.getElementById("inferAnnotatedImage").src = "";
@@ -306,6 +315,8 @@ function syncInferenceInputsFromConfig(config) {
     config ? `默认 ${Number(config.conf_threshold).toFixed(2)}` : "留空则使用模型默认值";
   document.getElementById("inferIouThreshold").placeholder =
     config ? `默认 ${Number(config.iou_threshold).toFixed(2)}` : "留空则使用模型默认值";
+  document.getElementById("inferImgsz").placeholder =
+    config ? `默认 ${config.imgsz}` : "留空则使用模型默认值";
   document.getElementById("inferMaxDet").placeholder =
     config ? `默认 ${config.max_det}` : "留空则使用模型默认值";
 }
@@ -403,6 +414,15 @@ function loadImageFromFile(file) {
   });
 }
 
+function loadImageFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
 async function buildAnnotatedDetectImage(file, result) {
   const img = await loadImageFromFile(file);
   const canvas = document.createElement("canvas");
@@ -464,6 +484,43 @@ async function buildAnnotatedDetectImage(file, result) {
       ctx.fillStyle = "#1b1f1d";
       ctx.fillText(label, x1 + fontPaddingX, Math.max(0, y1 - labelHeight - labelOffsetY) + fontPaddingY);
     }
+  });
+
+  return canvas.toDataURL("image/jpeg", 0.92);
+}
+
+async function buildInferenceAnnotatedImage(file, result) {
+  const img = await loadImageFromFile(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  const baseSize = Math.max(img.width, img.height);
+  const lineWidth = Math.max(2, Math.round(baseSize / 500));
+  const fontSize = Math.max(20, Math.round(baseSize / 64));
+  const fontPaddingX = Math.max(6, Math.round(fontSize * 0.3));
+  const fontPaddingY = Math.max(4, Math.round(fontSize * 0.22));
+  const labelHeight = fontSize + fontPaddingY * 2;
+
+  (result.detections || []).forEach((item, index) => {
+    const [x1, y1, x2, y2] = item.box || [];
+    if (![x1, y1, x2, y2].every(Number.isFinite)) {
+      return;
+    }
+    const label = `${index + 1}. ${item.class_name || item.class_id} ${(Number(item.confidence) || 0).toFixed(3)}`;
+    const color = item.class_name === "fire" ? "#237cff" : "#47c4ff";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.font = `${fontSize}px "Source Han Sans SC", sans-serif`;
+    const textWidth = ctx.measureText(label).width;
+    const labelY = Math.max(0, y1 - labelHeight - 6);
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, labelY, textWidth + fontPaddingX * 2, labelHeight);
+    ctx.fillStyle = "#ffffff";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x1 + fontPaddingX, labelY + labelHeight / 2);
   });
 
   return canvas.toDataURL("image/jpeg", 0.92);
@@ -1549,7 +1606,7 @@ async function loadInferenceModels() {
       <strong>${item.name}</strong>
       <div>任务: ${item.task_type}</div>
       <div>后端: ${item.backend}</div>
-      <small>${item.description || "内置 YOLOv11 推理模型"}</small>
+      <small>${item.description || "内置检测模型"}</small>
     `;
     card.onclick = async () => {
       state.selectedInferenceModelName = item.name;
@@ -2049,7 +2106,7 @@ async function runDetectImage() {
 
 async function runInferenceImage() {
   if (!state.selectedInferenceModelName) {
-    alert("请先选择推理模型");
+    alert("请先选择检测模型");
     return;
   }
   const file = state.inferFile || document.getElementById("inferImageFile").files[0];
@@ -2064,6 +2121,7 @@ async function runInferenceImage() {
     const form = new FormData();
     const confRaw = document.getElementById("inferConfThreshold").value.trim();
     const iouRaw = document.getElementById("inferIouThreshold").value.trim();
+    const imgszRaw = document.getElementById("inferImgsz").value.trim();
     const maxDetRaw = document.getElementById("inferMaxDet").value.trim();
     const deviceRaw = document.getElementById("inferDevice").value.trim();
     const includeVisualization = document.getElementById("inferIncludeVisualization").checked;
@@ -2072,6 +2130,9 @@ async function runInferenceImage() {
     }
     if (iouRaw !== "") {
       form.append("iou_threshold", iouRaw);
+    }
+    if (imgszRaw !== "") {
+      form.append("imgsz", imgszRaw);
     }
     if (maxDetRaw !== "") {
       form.append("max_det", maxDetRaw);
@@ -2083,15 +2144,17 @@ async function runInferenceImage() {
     form.append("image_file", file);
     const result = await api(`/api/inference/${state.selectedInferenceModelName}`, { method: "POST", body: form });
     const originalUrl = URL.createObjectURL(file);
-    const annotatedUrl = result.visualization_base64 ? `data:image/jpeg;base64,${result.visualization_base64}` : "";
+    const annotatedUrl = result.visualization_base64
+      ? `data:image/jpeg;base64,${result.visualization_base64}`
+      : await buildInferenceAnnotatedImage(file, result);
     const count = Number.isFinite(result.count) ? result.count : (Array.isArray(result.detections) ? result.detections.length : 0);
     document.getElementById("inferOriginalImage").src = originalUrl;
     document.getElementById("inferOriginalImage").classList.remove("hidden");
     document.getElementById("inferAnnotatedImage").src = annotatedUrl;
-    document.getElementById("inferAnnotatedImage").classList.toggle("hidden", !annotatedUrl);
+    document.getElementById("inferAnnotatedImage").classList.remove("hidden");
     document.getElementById("inferResultMeta").textContent =
-      `模型=${result.model_name} 检测数=${count} conf=${result.conf_threshold} iou=${result.iou_threshold}`;
-    setJson("inferResultJson", result);
+      `模型=${result.model_name} 检测数=${count} conf=${result.conf_threshold} iou=${result.iou_threshold} imgsz=${result.imgsz}${result.visualization_base64 ? "" : " 前端兜底渲染"}`;
+    setInferenceResultJson(result);
   } finally {
     setInferenceBusyState(false);
   }
@@ -2357,14 +2420,14 @@ document.getElementById("inferOriginalImage").addEventListener("click", (event) 
   if (event.currentTarget.classList.contains("hidden")) {
     return;
   }
-  openImagePreview(event.currentTarget.src, "YOLOv11 推理原图");
+  openImagePreview(event.currentTarget.src, "检测原图");
 });
 
 document.getElementById("inferAnnotatedImage").addEventListener("click", (event) => {
   if (event.currentTarget.classList.contains("hidden")) {
     return;
   }
-  openImagePreview(event.currentTarget.src, "YOLOv11 推理可视化结果");
+  openImagePreview(event.currentTarget.src, "检测可视化结果");
 });
 
 document.getElementById("appendHeatmapImage").addEventListener("click", (event) => {

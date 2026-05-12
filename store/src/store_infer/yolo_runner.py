@@ -31,17 +31,20 @@ class YoloInferenceRunner(BaseInferenceRunner):
         image_bgr = maybe_load_image_bgr(image_path=image_path, image_bytes=image_bytes, image_bgr=image_bgr)
         conf_value = kwargs.get("conf_threshold")
         iou_value = kwargs.get("iou_threshold")
+        imgsz_value = kwargs.get("imgsz")
         max_det_value = kwargs.get("max_det")
         device_value = kwargs.get("device")
         include_visualization_base64 = bool(kwargs.get("include_visualization_base64", False))
         conf = float(self.config.conf_threshold if conf_value is None else conf_value)
         iou = float(self.config.iou_threshold if iou_value is None else iou_value)
+        imgsz = int(self.config.imgsz if imgsz_value is None else imgsz_value)
         max_det = int(self.config.max_det if max_det_value is None else max_det_value)
         device = self.config.device if device_value is None else device_value
         result = self.model.predict(
             source=image_bgr,
             conf=conf,
             iou=iou,
+            imgsz=imgsz,
             max_det=max_det,
             device=device,
             verbose=False,
@@ -81,6 +84,7 @@ class YoloInferenceRunner(BaseInferenceRunner):
             "detections": detections,
             "conf_threshold": conf,
             "iou_threshold": iou,
+            "imgsz": imgsz,
             "max_det": max_det,
         }
         if include_visualization_base64:
