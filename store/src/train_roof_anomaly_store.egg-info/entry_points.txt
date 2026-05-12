@@ -1,0 +1,3 @@
+[console_scripts]
+store_web = store_web.__main__:main
+train-roof-store-server = store_service.server:main

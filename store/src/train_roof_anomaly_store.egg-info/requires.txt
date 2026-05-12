@@ -1,0 +1,14 @@
+numpy
+opencv-python
+Pillow
+scikit-learn
+torch
+torchvision
+tqdm
+ultralytics
+fastapi
+uvicorn
+python-multipart
+
+[faiss]
+faiss-cpu

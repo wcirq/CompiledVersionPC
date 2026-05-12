@@ -1,0 +1,25 @@
+Metadata-Version: 2.4
+Name: train-roof-anomaly-store
+Version: 0.1.0
+Summary: Train roof anomaly detection library with packaged YOLO segmentation, HTTP service, and management UI.
+Author: OpenAI Codex
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: opencv-python
+Requires-Dist: Pillow
+Requires-Dist: scikit-learn
+Requires-Dist: torch
+Requires-Dist: torchvision
+Requires-Dist: tqdm
+Requires-Dist: ultralytics
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: python-multipart
+Provides-Extra: faiss
+Requires-Dist: faiss-cpu; extra == "faiss"
+
+# Train Roof Anomaly Store
+
+See [docs/USAGE.md](docs/USAGE.md) for the full packaging, library, HTTP, and UI usage guide.
+

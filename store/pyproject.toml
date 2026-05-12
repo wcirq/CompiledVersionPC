@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "train-roof-anomaly-store"
+version = "0.1.0"
+description = "Train roof anomaly detection library with packaged YOLO segmentation, HTTP service, and management UI."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "numpy",
+  "opencv-python",
+  "Pillow",
+  "scikit-learn",
+  "torch",
+  "torchvision",
+  "tqdm",
+  "ultralytics",
+  "fastapi",
+  "uvicorn",
+  "python-multipart",
+]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu"]
+
+[project.scripts]
+store_web = "store_web.__main__:main"
+train-roof-store-server = "store_service.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+store_core = ["assets/weights/*.pt"]
+store_infer = ["assets/weights/*.pt"]
+store_web = ["static/*"]

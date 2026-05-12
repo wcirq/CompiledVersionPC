@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Store Console 管理与推理测试台</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260512a">
+</head>
+<body>
+  <div class="page">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>Store Console</h1>
+        <p>异物检测管理与 YOLOv11 推理测试</p>
+      </div>
+      <div class="view-switch">
+        <button id="openStoreViewBtn" class="view-switch-button active" type="button">异物管理</button>
+        <button id="openInferViewBtn" class="view-switch-button" type="button">YOLOv11 测试</button>
+      </div>
+      <div id="storeSidebarPanel" class="sidebar-panel">
+        <button id="refreshModelsBtn">刷新模型</button>
+        <div class="sidebar-actions">
+          <input id="importModelFile" class="visually-hidden" type="file" accept=".zip,application/zip">
+          <label for="importModelFile" class="upload-entry-card compact-upload-entry">导入模型</label>
+          <button id="exportModelBtn" class="secondary-button" type="button">导出当前模型</button>
+        </div>
+        <div id="modelTransferStatus" class="transfer-status hidden">
+          <div class="transfer-status-head">
+            <strong id="modelTransferTitle">模型传输中</strong>
+            <span id="modelTransferPercent">0%</span>
+          </div>
+          <div class="transfer-progress">
+            <div id="modelTransferBar" class="transfer-progress-bar"></div>
+          </div>
+          <div id="modelTransferMessage" class="transfer-status-message">准备开始</div>
+        </div>
+        <div id="modelsList" class="models-list"></div>
+      </div>
+      <div id="inferSidebarPanel" class="sidebar-panel hidden">
+        <button id="refreshInferenceModelsBtn" type="button">刷新推理模型</button>
+        <div class="section-hint sidebar-hint">选择一个内置 YOLOv11 模型后，在右侧上传图片测试效果。</div>
+        <div id="inferenceModelsList" class="models-list"></div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div id="storeWorkbench" class="workspace">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>模型信息</h2>
+        </div>
+        <div class="model-threshold-bar">
+          <label class="append-option-field" for="modelThresholdInput">
+            <span>默认 Threshold</span>
+            <div class="inline-option-row">
+              <input id="modelThresholdInput" type="number" step="0.1" placeholder="选择模型后可修改">
+              <button type="button" id="saveModelThresholdBtn" class="secondary-button">保存默认 Threshold</button>
+            </div>
+          </label>
+          <div class="inline-option-row model-danger-row">
+            <button type="button" id="deleteModelBtn" class="danger">删除当前模型</button>
+          </div>
+        </div>
+        <pre id="modelInfo" class="json-view">请选择模型</pre>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>向量库样本</h2>
+          <div class="stack">
+            <button type="button" id="openSamplesBtn">查看向量库样本</button>
+            <button type="button" id="pruneModelAssetsBtn" class="secondary-button">精简模型文件</button>
+            <div id="samplesEntryHint" class="section-hint">请选择模型后查看</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>追加正样本 / 轮廓提取</h2>
+          <div class="stack">
+            <input id="appendImageFile" class="visually-hidden" type="file" accept="image/*">
+            <label id="appendUploadEntry" for="appendImageFile" class="upload-entry-card">
+              <span class="upload-entry-icon" aria-hidden="true">+</span>
+              <span class="upload-entry-title">追加正样本</span>
+              <span id="appendUploadSubtitle" class="upload-entry-subtitle">请先选择模型</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>异物检测</h2>
+          <div id="detectResultMeta" class="append-heatmap-meta">请先选择模型</div>
+        </div>
+        <div class="stack">
+          <input id="detectImageFile" class="visually-hidden" type="file" accept="image/*">
+          <label id="detectUploadEntry" for="detectImageFile" class="upload-entry-card">
+            <span class="upload-entry-icon" aria-hidden="true">D</span>
+            <span class="upload-entry-title">上传检测图片</span>
+            <span id="detectUploadSubtitle" class="upload-entry-subtitle">请先选择模型</span>
+          </label>
+          <div class="append-options-row">
+            <label class="append-option-field" for="detectThreshold">
+              <span id="detectThresholdLabel">Threshold</span>
+              <div class="inline-option-row">
+                <input id="detectThreshold" type="number" step="0.1" placeholder="留空则使用模型默认值">
+                <button type="button" id="rerunDetectBtn" class="secondary-button">重新检测</button>
+              </div>
+            </label>
+            <label class="append-check-field" for="detectIncludeHeatmap">
+              <input id="detectIncludeHeatmap" type="checkbox" checked>
+              <span>返回热力图</span>
+            </label>
+            <label class="append-check-field" for="detectHeatmapIncludeBackground">
+              <input id="detectHeatmapIncludeBackground" type="checkbox" checked>
+              <span>热力图叠加背景</span>
+            </label>
+            <label class="append-check-field" for="detectHeatmapZeroBelowThreshold">
+              <input id="detectHeatmapZeroBelowThreshold" type="checkbox" checked>
+              <span>阈值以下置零</span>
+            </label>
+          </div>
+          <div class="detect-result-grid">
+            <div class="detect-result-card">
+              <h3>热力图</h3>
+              <img id="detectHeatmapImage" class="preview-image detect-result-image hidden" alt="检测热力图">
+            </div>
+            <div class="detect-result-card">
+              <h3>异常结果框</h3>
+              <img id="detectAnnotatedImage" class="preview-image detect-result-image hidden" alt="检测结果框">
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div id="inferWorkbench" class="workspace hidden">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>YOLOv11 推理测试</h2>
+            <div id="inferResultMeta" class="append-heatmap-meta">请先选择推理模型</div>
+          </div>
+          <div class="inference-layout">
+            <div class="stack">
+              <div class="inference-params-grid">
+                <label class="append-option-field" for="inferConfThreshold">
+                  <span>Conf Threshold</span>
+                  <input id="inferConfThreshold" type="number" min="0" max="1" step="0.01" placeholder="留空则使用模型默认值">
+                </label>
+                <label class="append-option-field" for="inferIouThreshold">
+                  <span>IoU Threshold</span>
+                  <input id="inferIouThreshold" type="number" min="0" max="1" step="0.01" placeholder="留空则使用模型默认值">
+                </label>
+                <label class="append-option-field" for="inferMaxDet">
+                  <span>Max Det</span>
+                  <input id="inferMaxDet" type="number" min="1" step="1" placeholder="留空则使用模型默认值">
+                </label>
+                <label class="append-option-field" for="inferDevice">
+                  <span>Device</span>
+                  <input id="inferDevice" type="text" placeholder="如 cpu / cuda:0">
+                </label>
+              </div>
+              <div class="append-options-row">
+                <label class="append-check-field" for="inferIncludeVisualization">
+                  <input id="inferIncludeVisualization" type="checkbox" checked>
+                  <span>返回可视化结果</span>
+                </label>
+                <button type="button" id="rerunInferenceBtn" class="secondary-button">重新推理</button>
+              </div>
+              <input id="inferImageFile" class="visually-hidden" type="file" accept="image/*">
+              <label id="inferUploadEntry" for="inferImageFile" class="upload-entry-card">
+                <span class="upload-entry-icon" aria-hidden="true">Y</span>
+                <span class="upload-entry-title">上传测试图片</span>
+                <span id="inferUploadSubtitle" class="upload-entry-subtitle">请先选择推理模型</span>
+              </label>
+            </div>
+            <div class="panel subtle-panel">
+              <div class="panel-head">
+                <h3>模型配置</h3>
+              </div>
+              <pre id="inferModelInfo" class="json-view">请选择推理模型</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>推理结果</h2>
+          </div>
+          <div class="detect-result-grid">
+            <div class="detect-result-card">
+              <h3>原图</h3>
+              <img id="inferOriginalImage" class="preview-image detect-result-image hidden" alt="推理原图">
+            </div>
+            <div class="detect-result-card">
+              <h3>可视化结果</h3>
+              <img id="inferAnnotatedImage" class="preview-image detect-result-image hidden" alt="推理可视化结果">
+            </div>
+          </div>
+          <pre id="inferResultJson" class="json-view inference-json">等待推理</pre>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="samplesModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="samplesModal"></div>
+    <div class="modal-dialog modal-large">
+      <div class="modal-head">
+        <h2>向量库样本</h2>
+        <button type="button" class="modal-close" data-close-modal="samplesModal">关闭</button>
+      </div>
+      <div class="panel-head">
+        <div id="samplesModalMeta" class="append-heatmap-meta">请选择模型后查看</div>
+        <div class="pager">
+          <button id="prevPageBtn">上一页</button>
+          <span id="pageLabel">1 / 1</span>
+          <button id="nextPageBtn">下一页</button>
+        </div>
+      </div>
+      <div id="samplesTable" class="samples-table"></div>
+    </div>
+  </div>
+
+  <div id="exportModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="exportModal"></div>
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <h2>导出模型</h2>
+        <button type="button" class="modal-close" data-close-modal="exportModal">关闭</button>
+      </div>
+      <div class="stack">
+        <div id="exportModeHint" class="section-hint">请选择导出方式。</div>
+        <label id="exportFullOption" class="export-option-card">
+          <input type="radio" name="exportMode" value="full" checked>
+          <div>
+            <strong>完整模型包</strong>
+            <div id="exportFullSummary" class="section-hint">包含模型目录全部文件，可继续查看向量库样本、编辑样本、重建模型。</div>
+          </div>
+        </label>
+        <label id="exportDeployOption" class="export-option-card">
+          <input type="radio" name="exportMode" value="deploy">
+          <div>
+            <strong>部署模型包</strong>
+            <div id="exportDeploySummary" class="section-hint">仅导出部署检测所需关键文件。导入后无法查看向量库样本，也不能做样本维护。</div>
+          </div>
+        </label>
+        <div class="edit-actions">
+          <button type="button" id="confirmExportBtn">开始导出</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="editModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="editModal"></div>
+    <div class="modal-dialog modal-large">
+      <div class="modal-head">
+        <h2>样本编辑</h2>
+        <button type="button" class="modal-close" data-close-modal="editModal">关闭</button>
+      </div>
+      <form id="updateForm" class="stack">
+        <div class="edit-topbar">
+          <input id="updateSampleId" type="text" placeholder="sample_id" readonly>
+          <input id="updateNote" type="text" placeholder="备注">
+        </div>
+        <div class="edit-modal-grid">
+          <section class="edit-section">
+            <div class="section-head">
+              <h3>轮廓编辑</h3>
+              <div class="canvas-tools compact-tools">
+                <button type="button" id="updateNewPolygonBtn">新建轮廓</button>
+                <button type="button" id="updateDeletePolygonBtn">删除选中轮廓</button>
+              </div>
+            </div>
+            <canvas id="updateCanvas" class="editor-canvas compact-canvas"></canvas>
+            <textarea id="updateContour" rows="4" placeholder='新轮廓 JSON'></textarea>
+          </section>
+          <section class="edit-section">
+            <div class="tile-panel">
+              <div class="tile-panel-head">
+                <h3>子图拼接与启停</h3>
+                <button type="button" id="saveTileStateBtn">仅保存子图启停</button>
+              </div>
+              <div class="edit-help">灰色子图表示已禁用，点击可重新启用或禁用。</div>
+              <div id="tileCanvas" class="tile-canvas compact-tile-canvas"></div>
+            </div>
+            <div class="edit-actions">
+              <button type="submit">更新轮廓与子图向量优化</button>
+            </div>
+          </section>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="appendModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="appendModal"></div>
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <h2>追加正样本</h2>
+        <button type="button" class="modal-close" data-close-modal="appendModal">关闭</button>
+      </div>
+      <form id="appendForm" class="stack">
+        <div class="canvas-tools">
+          <button type="button" id="openAppendEditorBtn">放大标注</button>
+          <button type="button" id="appendAutoExtractBtn">重新自动提取</button>
+        </div>
+        <div class="editor-meta">
+          <span>点击预览图或“放大标注”进入大图编辑。</span>
+          <span>绿色为 YOLO 提取的列车顶部，橙红色为准备加入的新增样本框。</span>
+        </div>
+        <div id="appendPreviewCard" class="append-preview-card">
+          <img id="appendPreviewImage" class="preview-image append-preview-image hidden" alt="追加样本预览">
+          <div id="appendPreviewPlaceholder" class="append-preview-placeholder">等待图片与 YOLO 轮廓结果</div>
+        </div>
+        <div class="append-heatmap-panel">
+          <div class="append-heatmap-head">
+            <h3>异常检测热力图</h3>
+            <div id="appendHeatmapMeta" class="append-heatmap-meta">等待检测</div>
+          </div>
+          <img id="appendHeatmapImage" class="preview-image append-heatmap-image hidden" alt="异常检测热力图">
+        </div>
+        <div class="append-options-row">
+          <label class="append-option-field" for="appendThreshold">
+            <span id="appendThresholdLabel">Threshold</span>
+            <input id="appendThreshold" type="number" step="0.1" placeholder="留空则使用模型默认值">
+          </label>
+          <label class="append-option-field" for="appendMaxVectors">
+            <span>追加向量上限</span>
+            <input id="appendMaxVectors" type="number" min="1" step="1" value="20">
+          </label>
+          <label class="append-check-field" for="appendHeatmapIncludeBackground">
+            <input id="appendHeatmapIncludeBackground" type="checkbox" checked>
+            <span>热力图叠加背景</span>
+          </label>
+          <label class="append-check-field" for="appendHeatmapZeroBelowThreshold">
+            <input id="appendHeatmapZeroBelowThreshold" type="checkbox" checked>
+            <span>阈值以下置零</span>
+          </label>
+        </div>
+        <textarea id="appendContour" rows="5" hidden></textarea>
+        <div class="edit-actions">
+          <button type="submit">加入向量库</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="appendEditorModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="appendEditorModal"></div>
+    <div class="modal-dialog modal-large append-editor-dialog">
+      <div class="modal-head">
+        <h2>放大标注追加样本</h2>
+        <button type="button" class="modal-close" data-close-modal="appendEditorModal">关闭</button>
+      </div>
+      <div class="append-editor-toolbar">
+        <div class="canvas-tools compact-tools">
+          <button type="button" id="appendNewPolygonBtn">新建矩形</button>
+          <button type="button" id="appendDeletePolygonBtn">删除选中轮廓</button>
+        </div>
+        <div class="append-legend">
+          <span class="append-legend-item">
+            <span class="append-legend-swatch yolo"></span>
+            <span>YOLO 列车顶部</span>
+          </span>
+          <span class="append-legend-item">
+            <span class="append-legend-swatch manual"></span>
+            <span>新增样本框</span>
+          </span>
+        </div>
+      </div>
+      <div class="editor-meta">
+        <span>点击“新建矩形”后，在大图上拖拽框选新增样本区域。</span>
+        <span>如果不新建矩形，将默认使用当前的 YOLO 轮廓结果。</span>
+      </div>
+      <canvas id="appendEditorCanvas" class="editor-canvas append-editor-canvas"></canvas>
+      <textarea id="appendContour" rows="5" hidden></textarea>
+    </div>
+  </div>
+
+  <div id="tilePreviewModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="tilePreviewModal"></div>
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <h2>子图来源可视化</h2>
+        <button type="button" class="modal-close" data-close-modal="tilePreviewModal">关闭</button>
+      </div>
+      <div class="tile-preview-layout">
+        <div class="tile-preview-card">
+          <h3>真实子图</h3>
+          <img id="tilePreviewImage" class="preview-image hidden compact-preview-image" alt="tile 预览">
+          <div id="tilePreviewMeta" class="tile-preview-meta">点击“向量库样本”里的任意子图后显示</div>
+        </div>
+        <div class="tile-preview-card">
+          <h3>原图截取位置</h3>
+          <canvas id="tileSourceCanvas" class="editor-canvas compact-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="imagePreviewModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="imagePreviewModal"></div>
+    <div class="modal-dialog image-preview-dialog">
+      <div class="modal-head">
+        <h2 id="imagePreviewTitle">图片预览</h2>
+        <button type="button" class="modal-close" data-close-modal="imagePreviewModal">关闭</button>
+      </div>
+      <div id="imagePreviewBody" class="image-preview-body">
+        <img id="imagePreviewImage" class="image-preview-image" alt="放大预览图">
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js?v=20260512a"></script>
+</body>
+</html>
