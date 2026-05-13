@@ -1,5 +1,6 @@
 import base64
 import cv2
+import os
 import numpy as np
 from store_core import TrainRoofAnomalyStore
 from store_core.schemas import RuntimeOptions
@@ -61,8 +62,8 @@ def test_store_train(store: TrainRoofAnomalyStore):
     )
 
     result = store.train_model(
-        model_name="木板车顶模型",
-        image_dir="templates",
+        model_name="综合列车顶异物检测",
+        image_dir="templates2",
         runtime_options=options,
         calibrate_dir=None,
         progress_callback=on_progress,
@@ -72,17 +73,19 @@ def test_store_train(store: TrainRoofAnomalyStore):
     return result["model_id"]
 
 
-def test_store_predict(store: TrainRoofAnomalyStore, model_id=None):
-    image_path = "test_imgs/2.jpg"
+def test_store_predict(store: TrainRoofAnomalyStore, model_id=None, image_path=None):
+    if image_path is None:
+        image_path = "test_imgs2/test_h7x_DBXS_BAD/test5.jpg"
     result = store.detect_image(
         model_id="model_e8ad3cf30cd14a10" if model_id is None else model_id,
         image_path=image_path,
         include_heatmap_base64=True,
+        threshold=22
     )
 
     heatmap_base64 = result.get("heatmap_base64")
     if not heatmap_base64:
-        print("detect_image 未返回 heatmap_base64")
+        print(f"detect_image 未返回 heatmap_base64, {result['message']}")
         return
 
     # base64 热力图解码为 OpenCV 可显示的 BGR 图像。
@@ -157,19 +160,30 @@ def test_store_predict(store: TrainRoofAnomalyStore, model_id=None):
     cv2.imshow("detect_image heatmap", _resize_for_display(heatmap_image))
     cv2.imshow("detect_image annotations", _resize_for_display(annotated_image))
     print("按任意键关闭图片窗口")
-    cv2.waitKey(0)
+    cv2.waitKey(1)
     cv2.destroyAllWindows()
+    return annotated_image, heatmap_base64
+
+
+def test_store_batch_predict(store, model_id):
+    root = "test_imgs2/test_h7x_DBXS_BAD"
+    files = os.listdir(root)
+    for i, file in enumerate(files):
+        annotated_image, heatmap_base64 = test_store_predict(store, model_id=model_id, image_path=os.path.join(root, file))
+        # cv2.imwrite(os.path.join(root, f"{str(i).zfill(5)}_heatmap.jpg"), heatmap_base64)
+        cv2.imwrite(os.path.join(root, f"{str(i).zfill(5)}_annotated.jpg"), annotated_image)
 
 
 if __name__ == '__main__':
-    model_id = "model_6a9a9dbcdfb7443e"
+    model_id = "model_67dd6bdb82a346f6"
     store = TrainRoofAnomalyStore(
         root_dir="./store_data",
         autostart_service=True,
         service_port=55555,
-        yolo_conf_threshold=0.8,
+        yolo_conf_threshold=0.2,
     )
     # model_id = test_store_train(store)
     test_store_predict(store, model_id=model_id)
+    test_store_batch_predict(store, model_id=model_id)
 
     store.serve_forever()
