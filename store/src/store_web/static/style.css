@@ -163,6 +163,14 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.clickable-status-card {
+  cursor: pointer;
+}
+
+.clickable-status-card:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .transfer-status-head {
   display: flex;
   justify-content: space-between;
@@ -194,11 +202,55 @@ body {
   line-height: 1.4;
 }
 
+.train-status-button {
+  margin-top: 10px;
+}
+
 .compact-upload-entry {
   padding: 12px 14px;
   border-radius: 14px;
   justify-items: center;
   color: #1b1f1d;
+}
+
+.train-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.train-form-grid input[type="file"] {
+  padding: 10px 0;
+  border: none;
+  background: transparent;
+}
+
+.train-files-meta {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.train-json-panel,
+.train-log-panel {
+  gap: 12px;
+}
+
+.json-textarea {
+  min-height: 320px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.train-log-view {
+  min-height: 220px;
+  max-height: 380px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .model-card,
@@ -708,6 +760,12 @@ button.danger {
 
 .hidden {
   display: none;
+}
+
+@media (max-width: 980px) {
+  .train-form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .editor-canvas {

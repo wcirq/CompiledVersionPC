@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>列车顶视觉检测平台</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260513g">
+  <link rel="stylesheet" href="/static/style.css?v=20260516-train">
 </head>
 <body>
   <div class="page">
@@ -20,9 +20,21 @@
       <div id="storeSidebarPanel" class="sidebar-panel">
         <button id="refreshModelsBtn">刷新模型</button>
         <div class="sidebar-actions">
+          <button id="openTrainModalBtn" class="secondary-button" type="button">训练新模型</button>
           <input id="importModelFile" class="visually-hidden" type="file" accept=".zip,application/zip">
           <label for="importModelFile" class="upload-entry-card compact-upload-entry">导入模型</label>
           <button id="exportModelBtn" class="secondary-button" type="button">导出当前模型</button>
+        </div>
+        <div id="trainTaskStatus" class="transfer-status hidden clickable-status-card">
+          <div class="transfer-status-head">
+            <strong id="trainTaskTitle">训练任务</strong>
+            <span id="trainTaskPercent">0%</span>
+          </div>
+          <div class="transfer-progress">
+            <div id="trainTaskBar" class="transfer-progress-bar"></div>
+          </div>
+          <div id="trainTaskMessage" class="transfer-status-message">等待开始</div>
+          <button id="reopenTrainModalBtn" class="secondary-button train-status-button" type="button">继续查看训练</button>
         </div>
         <div id="modelTransferStatus" class="transfer-status hidden">
           <div class="transfer-status-head">
@@ -256,6 +268,61 @@
     </div>
   </div>
 
+  <div id="trainModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal="trainModal"></div>
+    <div class="modal-dialog modal-large">
+      <div class="modal-head">
+        <h2>训练新模型</h2>
+        <button type="button" class="modal-close" data-close-modal="trainModal">关闭</button>
+      </div>
+      <form id="trainForm" class="stack">
+        <div class="train-form-grid">
+          <label class="append-option-field" for="trainModelName">
+            <span>模型名称</span>
+            <input id="trainModelName" type="text" placeholder="例如：综合列车顶异物检测">
+          </label>
+          <label class="append-option-field" for="trainImageDirInput">
+            <span>训练图片文件夹</span>
+            <input id="trainImageDirInput" type="file" webkitdirectory directory multiple>
+          </label>
+          <label class="append-option-field" for="trainCalibrateDirInput">
+            <span>校准图片文件夹</span>
+            <input id="trainCalibrateDirInput" type="file" webkitdirectory directory multiple>
+          </label>
+        </div>
+        <div class="section-hint">
+          浏览器无法直接把本地目录路径传给后端，这里会上传所选文件夹中的图片，再在服务器端临时目录中启动训练。
+        </div>
+        <div class="train-files-meta">
+          <div id="trainDirSummary">训练图片: 未选择</div>
+          <div id="trainCalibrateSummary">校准图片: 未选择</div>
+        </div>
+        <div class="panel subtle-panel train-json-panel">
+          <div class="panel-head">
+            <h3>训练参数</h3>
+            <button type="button" id="resetRuntimeOptionsBtn" class="secondary-button">恢复默认参数</button>
+          </div>
+          <div class="section-hint">支持修改全部 `RuntimeOptions` 字段，使用 JSON 格式。</div>
+          <textarea id="trainRuntimeOptions" rows="18" class="json-textarea" placeholder='{"device":"cuda"}'></textarea>
+        </div>
+        <div class="panel subtle-panel train-log-panel">
+          <div class="panel-head">
+            <h3>训练进度与日志</h3>
+            <div class="inline-option-row">
+              <button type="button" id="refreshTrainTaskBtn" class="secondary-button">刷新日志</button>
+              <button type="button" id="stopTrainTaskBtn" class="danger">停止训练</button>
+            </div>
+          </div>
+          <div id="trainTaskMeta" class="append-heatmap-meta">尚未开始训练</div>
+          <pre id="trainTaskLog" class="json-view train-log-view">等待训练任务</pre>
+        </div>
+        <div class="edit-actions">
+          <button type="submit" id="startTrainBtn">开始训练</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="editModal" class="modal hidden">
     <div class="modal-backdrop" data-close-modal="editModal"></div>
     <div class="modal-dialog modal-large">
@@ -416,6 +483,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=20260513g"></script>
+  <script src="/static/app.js?v=20260516-train"></script>
 </body>
 </html>

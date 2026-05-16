@@ -78,7 +78,7 @@ IMGSZ = 640
 EPOCHS = 2000
 
 # 提前停止（连续多少轮指标不提升则停止）
-PATIENCE = 60
+PATIENCE = 100
 
 # 数据加载线程数
 WORKERS = 4
@@ -174,7 +174,7 @@ HSV_S = 0.7
 HSV_V = 0.4
 
 # 几何增强
-DEGREES = 5
+DEGREES = 180
 TRANSLATE = 0.1
 SCALE = 0.5
 SHEAR = 0.0

@@ -557,6 +557,7 @@ class ModelStoreManager:
 
         samples = self._load_samples(model_id, version_id)
         embeddings = self._collect_enabled_embeddings(model_id, version_id, samples)
+        raw_embedding_count = int(embeddings.shape[0])
         engine.memory_bank = engine._compress_memory(embeddings, sampling_ratio=options.memory_ratio) if compress_memory and options.memory_ratio < 1.0 else embeddings
         engine._build_index()
 
@@ -585,7 +586,12 @@ class ModelStoreManager:
                 engine.heatmap_vis_max = previous_stats.get("heatmap_vis_max")
 
         engine.save(str(engine_path))
-        return {"engine": engine, "threshold": threshold}
+        return {
+            "engine": engine,
+            "threshold": threshold,
+            "raw_embedding_count": raw_embedding_count,
+            "memory_bank_size": int(engine.memory_bank.shape[0]),
+        }
 
     def _preprocess_calibrate_dir(
         self,
@@ -683,9 +689,18 @@ class ModelStoreManager:
         for sample in samples:
             self._extract_sample_tiles(engine, model_id, version_id, sample, runtime_options)
         self._save_samples(model_id, version_id, samples)
+        total_tile_count = int(sum(int(sample.get("tile_count", 0)) for sample in samples))
+        self._emit(progress_callback, "build_tiles_done", sample_count=len(samples), tile_count=total_tile_count)
         rebuild = self._rebuild_engine_from_tiles(model_id, version_id, runtime_options, preserve_threshold=False, calibrate=False)
         engine = rebuild["engine"]
-        self._emit(progress_callback, "build_memory_done", memory_bank_size=int(engine.memory_bank.shape[0]))
+        self._emit(
+            progress_callback,
+            "build_memory_done",
+            tile_count=total_tile_count,
+            raw_embedding_count=int(rebuild.get("raw_embedding_count", 0)),
+            memory_bank_size=int(rebuild.get("memory_bank_size", int(engine.memory_bank.shape[0]))),
+            memory_ratio=float(runtime_options.memory_ratio),
+        )
 
         calibrate_source_dir = str(version_dir / "processed")
         if calibrate_dir:

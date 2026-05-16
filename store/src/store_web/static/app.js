@@ -17,6 +17,11 @@ const state = {
   detectFile: null,
   inferFile: null,
   appendPreviewUrl: "",
+  runtimeOptionsDefaults: null,
+  activeTrainTaskId: null,
+  trainTaskPollTimer: null,
+  trainTaskAutoSelectDone: false,
+  trainLogAutoFollow: true,
   imagePreview: {
     naturalWidth: 0,
     naturalHeight: 0,
@@ -59,6 +64,31 @@ function formatBytes(bytes) {
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatFileCountLabel(count) {
+  return `${Number(count) || 0} 个文件`;
+}
+
+function getSelectedFiles(inputId) {
+  return Array.from(document.getElementById(inputId).files || []);
+}
+
+function summarizeSelectedDirectory(files, emptyText) {
+  if (!files.length) {
+    return emptyText;
+  }
+  const totalBytes = files.reduce((sum, file) => sum + (file.size || 0), 0);
+  const firstPath = files[0].webkitRelativePath || files[0].name || "";
+  const rootName = firstPath.split("/")[0] || "已选目录";
+  return `${rootName} / ${formatFileCountLabel(files.length)} / ${formatBytes(totalBytes)}`;
+}
+
+function updateTrainDirectorySummary() {
+  const trainFiles = getSelectedFiles("trainImageDirInput");
+  const calibrateFiles = getSelectedFiles("trainCalibrateDirInput");
+  document.getElementById("trainDirSummary").textContent = `训练图片: ${summarizeSelectedDirectory(trainFiles, "未选择")}`;
+  document.getElementById("trainCalibrateSummary").textContent = `校准图片: ${summarizeSelectedDirectory(calibrateFiles, "未选择")}`;
 }
 
 function updateThresholdInputs(threshold) {
@@ -337,6 +367,134 @@ function setModelTransferStatus({ visible = false, title = "模型传输中", pe
 
 function resetModelTransferStatus() {
   setModelTransferStatus({ visible: false, percent: 0, message: "准备开始" });
+}
+
+function setTrainTaskStatus({ visible = false, title = "训练任务", percent = 0, message = "等待开始" } = {}) {
+  const root = document.getElementById("trainTaskStatus");
+  root.classList.toggle("hidden", !visible);
+  document.getElementById("trainTaskTitle").textContent = title;
+  const normalizedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  document.getElementById("trainTaskPercent").textContent = `${normalizedPercent.toFixed(0)}%`;
+  document.getElementById("trainTaskBar").style.width = `${normalizedPercent}%`;
+  document.getElementById("trainTaskMessage").textContent = message;
+}
+
+function isElementNearBottom(element, threshold = 24) {
+  return (element.scrollHeight - element.scrollTop - element.clientHeight) <= threshold;
+}
+
+function renderTrainTask(task) {
+  const meta = document.getElementById("trainTaskMeta");
+  const logNode = document.getElementById("trainTaskLog");
+  const stopButton = document.getElementById("stopTrainTaskBtn");
+  const reopenButton = document.getElementById("reopenTrainModalBtn");
+  const shouldFollow = state.trainLogAutoFollow || isElementNearBottom(logNode);
+  if (!task) {
+    meta.textContent = "尚未开始训练";
+    logNode.textContent = "等待训练任务";
+    logNode.scrollTop = logNode.scrollHeight;
+    stopButton.disabled = true;
+    reopenButton.disabled = true;
+    state.trainLogAutoFollow = true;
+    setTrainTaskStatus({ visible: false, percent: 0, message: "等待开始" });
+    return;
+  }
+  const lines = Array.isArray(task.logs) ? task.logs : [];
+  const suffix = task.error ? ` / 错误: ${task.error}` : "";
+  meta.textContent = `任务=${task.task_id} 状态=${task.status} 进度=${task.progress ?? 0}%${suffix}`;
+  logNode.textContent = lines.length ? lines.join("\n") : "暂无日志";
+  if (shouldFollow) {
+    logNode.scrollTop = logNode.scrollHeight;
+    state.trainLogAutoFollow = true;
+  }
+  stopButton.disabled = !["pending", "running", "stopping"].includes(task.status) || task.status === "stopping";
+  reopenButton.disabled = false;
+  setTrainTaskStatus({
+    visible: true,
+    title: `训练任务 ${task.model_name || ""}`.trim(),
+    percent: task.progress ?? 0,
+    message: task.message || "训练中",
+  });
+}
+
+function stopTrainTaskPolling() {
+  if (state.trainTaskPollTimer) {
+    window.clearTimeout(state.trainTaskPollTimer);
+    state.trainTaskPollTimer = null;
+  }
+}
+
+async function pollTrainTask(taskId, { immediate = false } = {}) {
+  state.activeTrainTaskId = taskId;
+  stopTrainTaskPolling();
+  const pollOnce = async () => {
+    if (!state.activeTrainTaskId) {
+      return;
+    }
+    const task = await api(`/api/train-tasks/${state.activeTrainTaskId}`);
+    renderTrainTask(task);
+    if (task.status === "completed") {
+      state.activeTrainTaskId = task.task_id;
+      if (task.model_id && !state.trainTaskAutoSelectDone) {
+        state.trainTaskAutoSelectDone = true;
+        state.selectedModelId = task.model_id;
+        await loadModelDetail();
+        if (state.selectedModelSampleAssetsAvailable) {
+          await loadSamples();
+        }
+        await loadModels();
+      }
+      return;
+    }
+    if (task.status === "error") {
+      return;
+    }
+    state.trainTaskPollTimer = window.setTimeout(() => {
+      pollTrainTask(taskId).catch((error) => {
+        console.error(error);
+        document.getElementById("trainTaskMeta").textContent = error.message;
+      });
+    }, 800);
+  };
+  if (immediate) {
+    await pollOnce();
+    return;
+  }
+  await pollOnce();
+}
+
+async function loadRuntimeOptionDefaults(force = false) {
+  if (state.runtimeOptionsDefaults && !force) {
+    return state.runtimeOptionsDefaults;
+  }
+  const data = await api("/api/runtime-options/defaults");
+  state.runtimeOptionsDefaults = data.runtime_options || {};
+  return state.runtimeOptionsDefaults;
+}
+
+async function resetTrainFormState({ keepLogs = false } = {}) {
+  const defaults = await loadRuntimeOptionDefaults();
+  document.getElementById("trainModelName").value = "";
+  document.getElementById("trainImageDirInput").value = "";
+  document.getElementById("trainCalibrateDirInput").value = "";
+  document.getElementById("trainRuntimeOptions").value = JSON.stringify(defaults, null, 2);
+  updateTrainDirectorySummary();
+  if (!keepLogs) {
+    renderTrainTask(null);
+    state.activeTrainTaskId = null;
+    state.trainTaskAutoSelectDone = false;
+    stopTrainTaskPolling();
+  }
+}
+
+async function openTrainModalAndRefresh() {
+  openModal("trainModal");
+  if (!state.runtimeOptionsDefaults || !state.activeTrainTaskId) {
+    await resetTrainFormState({ keepLogs: Boolean(state.activeTrainTaskId) });
+  }
+  if (state.activeTrainTaskId) {
+    await pollTrainTask(state.activeTrainTaskId, { immediate: true });
+  }
 }
 
 function refreshModelThresholdEditor() {
@@ -1826,6 +1984,65 @@ async function importModelArchive(file) {
   window.setTimeout(resetModelTransferStatus, 1200);
 }
 
+async function startTrainTask() {
+  const modelName = document.getElementById("trainModelName").value.trim();
+  if (!modelName) {
+    alert("请输入模型名称");
+    return;
+  }
+  const trainFiles = getSelectedFiles("trainImageDirInput");
+  const calibrateFiles = getSelectedFiles("trainCalibrateDirInput");
+  if (!trainFiles.length) {
+    alert("请选择训练图片文件夹");
+    return;
+  }
+  let runtimeOptions;
+  try {
+    runtimeOptions = JSON.parse(document.getElementById("trainRuntimeOptions").value.trim() || "{}");
+  } catch (error) {
+    alert(`训练参数 JSON 格式错误: ${error.message}`);
+    return;
+  }
+
+  const button = document.getElementById("startTrainBtn");
+  const refreshButton = document.getElementById("refreshTrainTaskBtn");
+  button.disabled = true;
+  button.textContent = "上传并启动训练中...";
+  refreshButton.disabled = true;
+
+  try {
+    const form = new FormData();
+    form.append("model_name", modelName);
+    form.append("runtime_options_json", JSON.stringify(runtimeOptions));
+    trainFiles.forEach((file) => form.append("train_files", file, file.webkitRelativePath || file.name));
+    calibrateFiles.forEach((file) => form.append("calibrate_files", file, file.webkitRelativePath || file.name));
+    const task = await api("/api/train-tasks", { method: "POST", body: form });
+    state.activeTrainTaskId = task.task_id;
+    state.trainTaskAutoSelectDone = false;
+    state.trainLogAutoFollow = true;
+    document.getElementById("trainTaskMeta").textContent =
+      `任务已创建: ${task.task_id} / 训练图片 ${formatFileCountLabel(task.train_file_count)} / 校准图片 ${formatFileCountLabel(task.calibrate_file_count)}`;
+    document.getElementById("trainTaskLog").textContent = "等待服务器返回训练日志...";
+    await pollTrainTask(task.task_id, { immediate: true });
+  } finally {
+    button.disabled = false;
+    button.textContent = "开始训练";
+    refreshButton.disabled = false;
+  }
+}
+
+async function stopTrainTask() {
+  if (!state.activeTrainTaskId) {
+    alert("当前没有训练任务");
+    return;
+  }
+  await api(`/api/train-tasks/${state.activeTrainTaskId}/stop`, { method: "POST" });
+  stopTrainTaskPolling();
+  const task = await api(`/api/train-tasks/${state.activeTrainTaskId}`);
+  renderTrainTask(task);
+  await loadModels();
+}
+
 async function loadExportSummary() {
   const fullOption = document.getElementById("exportFullOption");
   const deployOption = document.getElementById("exportDeployOption");
@@ -2093,12 +2310,15 @@ async function runDetectImage() {
     const annotatedUrl = await buildAnnotatedDetectImage(file, result);
     const anomalyCount = Array.isArray(result.anomaly_regions) ? result.anomaly_regions.length : 0;
     const scoreText = Number.isFinite(result.score) ? Number(result.score).toFixed(4) : "-";
+    const extraMessage = result.message
+      ? ` ${result.message}`
+      : (includeHeatmap && !heatmapUrl ? " 未返回热力图" : "");
     document.getElementById("detectHeatmapImage").src = heatmapUrl;
     document.getElementById("detectHeatmapImage").classList.toggle("hidden", !heatmapUrl);
     document.getElementById("detectAnnotatedImage").src = annotatedUrl;
     document.getElementById("detectAnnotatedImage").classList.remove("hidden");
     document.getElementById("detectResultMeta").textContent =
-      `score=${scoreText} threshold=${result.threshold ?? "-"} 异常区域=${anomalyCount} 结果=${result.is_anomaly ? "异常" : "正常"}`;
+      `score=${scoreText} threshold=${result.threshold ?? "-"} 异常区域=${anomalyCount} 结果=${result.is_anomaly ? "异常" : "正常"}${extraMessage}`;
   } finally {
     setDetectBusyState(false);
   }
@@ -2198,8 +2418,11 @@ async function autoExtractForAppend() {
     : "";
   const anomalyCount = Array.isArray(detectData.anomaly_regions) ? detectData.anomaly_regions.length : 0;
   const scoreText = Number.isFinite(detectData.score) ? Number(detectData.score).toFixed(4) : "-";
+  const extraMessage = detectData.message
+    ? ` ${detectData.message}`
+    : (!heatmapUrl ? " 未返回热力图" : "");
   setAppendHeatmapState({
-    message: `score=${scoreText} threshold=${detectData.threshold ?? "-"} 异常区域=${anomalyCount} 结果=${detectData.is_anomaly ? "异常" : "正常"}`,
+    message: `score=${scoreText} threshold=${detectData.threshold ?? "-"} 异常区域=${anomalyCount} 结果=${detectData.is_anomaly ? "异常" : "正常"}${extraMessage}`,
     imageUrl: heatmapUrl,
     visible: Boolean(heatmapUrl),
   });
@@ -2284,6 +2507,17 @@ async function updateSample() {
 
 document.getElementById("refreshModelsBtn").onclick = loadModels;
 document.getElementById("refreshInferenceModelsBtn").onclick = loadInferenceModels;
+document.getElementById("openTrainModalBtn").onclick = openTrainModalAndRefresh;
+document.getElementById("reopenTrainModalBtn").onclick = async (event) => {
+  event.stopPropagation();
+  await openTrainModalAndRefresh();
+};
+document.getElementById("trainTaskStatus").onclick = async () => {
+  if (!state.activeTrainTaskId) {
+    return;
+  }
+  await openTrainModalAndRefresh();
+};
 document.getElementById("openStoreViewBtn").onclick = () => setActiveView("store");
 document.getElementById("openInferViewBtn").onclick = () => setActiveView("infer");
 document.getElementById("openSamplesBtn").onclick = async () => {
@@ -2340,6 +2574,20 @@ document.getElementById("exportModelBtn").onclick = () => {
   loadExportSummary();
 };
 document.getElementById("confirmExportBtn").onclick = () => exportCurrentModel(getSelectedExportMode());
+document.getElementById("resetRuntimeOptionsBtn").onclick = async () => {
+  const defaults = await loadRuntimeOptionDefaults(true);
+  document.getElementById("trainRuntimeOptions").value = JSON.stringify(defaults, null, 2);
+};
+document.getElementById("refreshTrainTaskBtn").onclick = async () => {
+  if (!state.activeTrainTaskId) {
+    alert("当前没有训练任务");
+    return;
+  }
+  await pollTrainTask(state.activeTrainTaskId, { immediate: true });
+};
+document.getElementById("stopTrainTaskBtn").onclick = async () => {
+  await stopTrainTask();
+};
 document.getElementById("importModelFile").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) {
@@ -2354,6 +2602,11 @@ document.getElementById("importModelFile").addEventListener("change", async (eve
   } finally {
     event.target.value = "";
   }
+});
+document.getElementById("trainImageDirInput").addEventListener("change", updateTrainDirectorySummary);
+document.getElementById("trainCalibrateDirInput").addEventListener("change", updateTrainDirectorySummary);
+document.getElementById("trainTaskLog").addEventListener("scroll", (event) => {
+  state.trainLogAutoFollow = isElementNearBottom(event.currentTarget);
 });
 
 document.getElementById("appendAutoExtractBtn").onclick = autoExtractForAppend;
@@ -2376,18 +2629,27 @@ document.getElementById("appendForm").onsubmit = async (event) => {
   await appendSample();
 };
 
+document.getElementById("trainForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await startTrainTask();
+};
+
 document.getElementById("updateForm").onsubmit = async (event) => {
   event.preventDefault();
   await updateSample();
 };
 
 document.querySelectorAll("[data-close-modal]").forEach((element) => {
-  element.onclick = () => {
+  element.onclick = async () => {
     const modalId = element.getAttribute("data-close-modal");
     closeModal(modalId);
     if (modalId === "appendModal") {
       closeModal("appendEditorModal");
       resetAppendModalState();
+    } else if (modalId === "trainModal") {
+      if (!state.activeTrainTaskId) {
+        await resetTrainFormState();
+      }
     } else if (modalId === "imagePreviewModal") {
       resetImagePreviewState();
     }
@@ -2509,8 +2771,10 @@ refreshModelTransferActions();
 setAppendHeatmapState();
 resetDetectResultState();
 resetInferenceResultState();
+renderTrainTask(null);
 setDetectBusyState(false);
 setInferenceBusyState(false);
+updateTrainDirectorySummary();
 
 loadModels().catch((err) => {
   console.error(err);
@@ -2519,4 +2783,8 @@ loadModels().catch((err) => {
 loadInferenceModels().catch((err) => {
   console.error(err);
   document.getElementById("inferResultMeta").textContent = err.message;
+});
+resetTrainFormState().catch((err) => {
+  console.error(err);
+  document.getElementById("trainTaskMeta").textContent = err.message;
 });

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import shutil
 import threading
 import uuid
+from dataclasses import asdict
 from pathlib import Path
+from queue import Empty
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -11,12 +15,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from store_core.model_store import ModelStoreManager
 from store_core.schemas import RuntimeOptions
 from store_infer import get_inference_registry
 
 
 _EXPORT_TASKS: Dict[str, Dict[str, Any]] = {}
 _EXPORT_TASKS_LOCK = threading.Lock()
+_TRAIN_TASKS: Dict[str, Dict[str, Any]] = {}
+_TRAIN_TASKS_LOCK = threading.Lock()
 
 
 class TrainRequest(BaseModel):
@@ -74,11 +81,135 @@ def _parse_runtime_options(payload: Dict[str, Any]) -> RuntimeOptions:
     return RuntimeOptions(**payload)
 
 
+def _safe_relative_upload_path(filename: str, fallback_prefix: str, index: int) -> Path:
+    raw_name = (filename or "").replace("\\", "/").strip("/")
+    if not raw_name:
+        return Path(fallback_prefix) / f"file_{index:05d}"
+    safe_parts = [part for part in Path(raw_name).parts if part not in ("", ".", "..")]
+    if not safe_parts:
+        return Path(fallback_prefix) / f"file_{index:05d}"
+    return Path(*safe_parts)
+
+
+def _estimate_train_progress(stage: str, event: Dict[str, Any], current_progress: int) -> int:
+    stage_progress = {
+        "prepare_training": 3,
+        "build_tiles_start": 38,
+        "build_memory_done": 68,
+        "calibrate_start": 74,
+        "calibrate_done": 92,
+        "train_done": 100,
+    }
+    if stage in stage_progress:
+        return stage_progress[stage]
+    if stage in {"preprocess_ok", "preprocess_failed"}:
+        total = max(1, int(event.get("total", 1)))
+        index = max(0, min(total, int(event.get("index", 0))))
+        return max(current_progress, 4 + int(index * 30 / total))
+    if stage in {"calibrate_segment_ok", "calibrate_segment_failed"}:
+        total = max(1, int(event.get("total", 1)))
+        index = max(0, min(total, int(event.get("index", 0))))
+        return max(current_progress, 75 + int(index * 12 / total))
+    return current_progress
+
+
+async def _write_uploaded_files(
+    files: List[UploadFile],
+    target_dir: Path,
+    fallback_prefix: str,
+) -> int:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for index, upload in enumerate(files, start=1):
+        if upload is None:
+            continue
+        relative_path = _safe_relative_upload_path(upload.filename or "", fallback_prefix=fallback_prefix, index=index)
+        destination = target_dir / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        data = await upload.read()
+        if not data:
+            continue
+        destination.write_bytes(data)
+        written += 1
+    return written
+
+
+def _append_train_log(task_id: str, line: str) -> None:
+    with _TRAIN_TASKS_LOCK:
+        task = _TRAIN_TASKS.get(task_id)
+        if task is None:
+            return
+        task["logs"].append(line)
+        if len(task["logs"]) > 500:
+            task["logs"] = task["logs"][-500:]
+
+
+def _train_worker_entry(
+    manager_config: Dict[str, Any],
+    model_name: str,
+    image_dir: str,
+    runtime_options_payload: Dict[str, Any],
+    calibrate_dir: Optional[str],
+    event_queue: Any,
+) -> None:
+    manager = ModelStoreManager(
+        root_dir=manager_config["root_dir"],
+        yolo_weight_path=manager_config.get("yolo_weight_path"),
+        yolo_conf_threshold=manager_config.get("yolo_conf_threshold", 0.25),
+        yolo_device=manager_config.get("yolo_device"),
+    )
+    runtime_options = RuntimeOptions(**runtime_options_payload)
+
+    def on_progress(event: Dict[str, Any]) -> None:
+        event_queue.put({"type": "progress", "event": event})
+
+    try:
+        result = manager.train_model(
+            model_name=model_name,
+            image_dir=image_dir,
+            runtime_options=runtime_options,
+            calibrate_dir=calibrate_dir,
+            progress_callback=on_progress,
+        )
+        event_queue.put({"type": "completed", "result": result})
+    except Exception as exc:
+        event_queue.put({"type": "error", "error": str(exc)})
+
+
 def build_app(manager) -> FastAPI:
     app = FastAPI(title="Train Roof Anomaly Store")
     infer_registry = get_inference_registry()
     static_dir = Path(__file__).resolve().parents[1] / "store_web" / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    def remove_model_artifacts(model_id: Optional[str]) -> None:
+        if not model_id:
+            return
+        model_dir = Path(manager.models_dir) / model_id
+        shutil.rmtree(model_dir, ignore_errors=True)
+        registry = manager._read_registry()
+        next_models = [item for item in registry.get("models", []) if item.get("model_id") != model_id]
+        if len(next_models) != len(registry.get("models", [])):
+            registry["models"] = next_models
+            manager._save_registry(registry)
+
+    def finalize_stopped_task(task_id: str, reason: str = "训练已停止") -> None:
+        with _TRAIN_TASKS_LOCK:
+            task = _TRAIN_TASKS.get(task_id)
+            if task is None:
+                return
+            upload_root = task.get("upload_root")
+            model_id = task.get("model_id")
+            task["status"] = "stopped"
+            task["progress"] = 0
+            task["message"] = reason
+            task["error"] = None
+            task["logs"].append(json.dumps({"stage": "stopped", "detail": reason}, ensure_ascii=False))
+            task["process"] = None
+            task["queue"] = None
+        if upload_root:
+            shutil.rmtree(upload_root, ignore_errors=True)
+        remove_model_artifacts(model_id)
 
     @app.get("/")
     def index() -> FileResponse:
@@ -87,6 +218,10 @@ def build_app(manager) -> FastAPI:
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
         return {"status": "ok"}
+
+    @app.get("/api/runtime-options/defaults")
+    def get_runtime_options_defaults() -> Dict[str, Any]:
+        return {"runtime_options": asdict(RuntimeOptions())}
 
     @app.get("/api/models")
     def list_models() -> Dict[str, Any]:
@@ -284,6 +419,217 @@ def build_app(manager) -> FastAPI:
             return response
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/train-tasks")
+    async def create_train_task(
+        model_name: str = Form(...),
+        runtime_options_json: str = Form("{}"),
+        train_files: List[UploadFile] = File(...),
+        calibrate_files: Optional[List[UploadFile]] = File(None),
+    ) -> Dict[str, Any]:
+        try:
+            runtime_options_payload = json.loads(runtime_options_json or "{}")
+            runtime_options = _parse_runtime_options(runtime_options_payload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"训练参数解析失败: {exc}") from exc
+
+        if not train_files:
+            raise HTTPException(status_code=400, detail="请至少选择一个训练文件。")
+
+        task_id = f"train_{uuid.uuid4().hex[:16]}"
+        upload_root = Path(manager.tmp_dir) / "train_tasks" / task_id
+        train_dir = upload_root / "train"
+        calibrate_dir = upload_root / "calibrate"
+        try:
+            train_count = await _write_uploaded_files(train_files, train_dir, fallback_prefix="train")
+            calibrate_count = await _write_uploaded_files(calibrate_files or [], calibrate_dir, fallback_prefix="calibrate")
+        except Exception as exc:
+            shutil.rmtree(upload_root, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"上传训练文件失败: {exc}") from exc
+
+        if train_count <= 0:
+            shutil.rmtree(upload_root, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="训练目录没有可用图片文件。")
+
+        with _TRAIN_TASKS_LOCK:
+            _TRAIN_TASKS[task_id] = {
+                "task_id": task_id,
+                "status": "pending",
+                "progress": 0,
+                "message": "训练文件上传完成，等待开始。",
+                "model_name": model_name,
+                "model_id": None,
+                "error": None,
+                "logs": [
+                    f"[upload] 训练文件 {train_count} 个",
+                    f"[upload] 校准文件 {calibrate_count} 个",
+                ],
+                "progress_events": [],
+                "runtime_options": asdict(runtime_options),
+                "train_file_count": train_count,
+                "calibrate_file_count": calibrate_count,
+                "upload_root": str(upload_root),
+                "process": None,
+                "queue": None,
+            }
+
+        ctx = multiprocessing.get_context("spawn")
+        event_queue = ctx.Queue()
+        process = ctx.Process(
+            target=_train_worker_entry,
+            name=f"store-train-{task_id}",
+            args=(
+                {
+                    "root_dir": str(manager.root_dir),
+                    "yolo_weight_path": manager.yolo_weight_path,
+                    "yolo_conf_threshold": manager.yolo_conf_threshold,
+                    "yolo_device": manager.yolo_device,
+                },
+                model_name,
+                str(train_dir),
+                asdict(runtime_options),
+                str(calibrate_dir) if calibrate_count > 0 else None,
+                event_queue,
+            ),
+            daemon=True,
+        )
+        process.start()
+        with _TRAIN_TASKS_LOCK:
+            task = _TRAIN_TASKS.get(task_id)
+            if task is not None:
+                task["status"] = "running"
+                task["progress"] = 1
+                task["message"] = "开始训练..."
+                task["process"] = process
+                task["queue"] = event_queue
+
+        def monitor_train_task() -> None:
+            while True:
+                with _TRAIN_TASKS_LOCK:
+                    task = _TRAIN_TASKS.get(task_id)
+                    if task is None:
+                        break
+                    current_process = task.get("process")
+                    current_queue = task.get("queue")
+                    current_status = task.get("status")
+                if current_status == "stopped":
+                    break
+                if current_queue is not None:
+                    try:
+                        message = current_queue.get(timeout=0.5)
+                    except Empty:
+                        message = None
+                    if message:
+                        if message.get("type") == "progress":
+                            event = message.get("event", {})
+                            stage = str(event.get("stage", "unknown"))
+                            line = json.dumps(event, ensure_ascii=False)
+                            with _TRAIN_TASKS_LOCK:
+                                live_task = _TRAIN_TASKS.get(task_id)
+                                if live_task is not None:
+                                    live_task["progress_events"].append(event)
+                                    if len(live_task["progress_events"]) > 500:
+                                        live_task["progress_events"] = live_task["progress_events"][-500:]
+                                    live_task["logs"].append(line)
+                                    if len(live_task["logs"]) > 500:
+                                        live_task["logs"] = live_task["logs"][-500:]
+                                    live_task["progress"] = _estimate_train_progress(stage, event, int(live_task.get("progress", 0)))
+                                    live_task["message"] = f"训练中: {stage}"
+                                    if event.get("model_id"):
+                                        live_task["model_id"] = event.get("model_id")
+                        elif message.get("type") == "completed":
+                            result = message.get("result", {})
+                            with _TRAIN_TASKS_LOCK:
+                                live_task = _TRAIN_TASKS.get(task_id)
+                                if live_task is not None:
+                                    live_task["status"] = "completed"
+                                    live_task["progress"] = 100
+                                    live_task["message"] = "训练完成"
+                                    live_task["model_id"] = result.get("model_id")
+                                    live_task["result"] = result
+                                    live_task["logs"].append(json.dumps({"stage": "completed", "model_id": result.get("model_id")}, ensure_ascii=False))
+                            shutil.rmtree(upload_root, ignore_errors=True)
+                            break
+                        elif message.get("type") == "error":
+                            detail = message.get("error", "训练失败")
+                            with _TRAIN_TASKS_LOCK:
+                                live_task = _TRAIN_TASKS.get(task_id)
+                                if live_task is not None:
+                                    live_task["status"] = "error"
+                                    live_task["error"] = detail
+                                    live_task["message"] = f"训练失败: {detail}"
+                                    live_task["logs"].append(json.dumps({"stage": "error", "detail": detail}, ensure_ascii=False))
+                            shutil.rmtree(upload_root, ignore_errors=True)
+                            remove_model_artifacts(task.get("model_id") if task else None)
+                            break
+                if current_process is not None and not current_process.is_alive():
+                    current_process.join(timeout=0.1)
+                    with _TRAIN_TASKS_LOCK:
+                        live_task = _TRAIN_TASKS.get(task_id)
+                        if live_task is None or live_task.get("status") in {"completed", "error", "stopped"}:
+                            break
+                        live_task["status"] = "error"
+                        live_task["error"] = "训练进程异常退出"
+                        live_task["message"] = "训练进程异常退出"
+                        live_task["logs"].append(json.dumps({"stage": "error", "detail": "训练进程异常退出"}, ensure_ascii=False))
+                    shutil.rmtree(upload_root, ignore_errors=True)
+                    remove_model_artifacts(task.get("model_id") if task else None)
+                    break
+
+        threading.Thread(target=monitor_train_task, name=f"store-train-monitor-{task_id}", daemon=True).start()
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "progress": 1,
+            "message": "训练任务已创建并开始运行",
+            "train_file_count": train_count,
+            "calibrate_file_count": calibrate_count,
+        }
+
+    @app.get("/api/train-tasks/{task_id}")
+    def get_train_task(task_id: str) -> Dict[str, Any]:
+        with _TRAIN_TASKS_LOCK:
+            task = _TRAIN_TASKS.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail=f"Unknown train task: {task_id}")
+            return {
+                "task_id": task["task_id"],
+                "status": task["status"],
+                "progress": task["progress"],
+                "message": task["message"],
+                "model_name": task["model_name"],
+                "model_id": task.get("model_id"),
+                "error": task.get("error"),
+                "logs": task.get("logs", []),
+                "progress_events": task.get("progress_events", []),
+                "runtime_options": task.get("runtime_options", {}),
+                "train_file_count": task.get("train_file_count", 0),
+                "calibrate_file_count": task.get("calibrate_file_count", 0),
+            }
+
+    @app.post("/api/train-tasks/{task_id}/stop")
+    def stop_train_task(task_id: str) -> Dict[str, Any]:
+        with _TRAIN_TASKS_LOCK:
+            task = _TRAIN_TASKS.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail=f"Unknown train task: {task_id}")
+            status = task.get("status")
+            process = task.get("process")
+            if status in {"completed", "error", "stopped"}:
+                raise HTTPException(status_code=400, detail=f"当前任务状态不支持停止: {status}")
+            task["status"] = "stopping"
+            task["message"] = "正在停止训练并清理文件..."
+            task["logs"].append(json.dumps({"stage": "stopping", "detail": "收到停止请求"}, ensure_ascii=False))
+
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=3.0)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1.0)
+
+        finalize_stopped_task(task_id)
+        return {"task_id": task_id, "status": "stopped", "message": "训练已停止，已清理临时文件和模型目录。"}
 
     @app.post("/api/detect")
     async def detect_model(

@@ -16,7 +16,7 @@ def new_id(prefix: str) -> str:
 
 @dataclass
 class RuntimeOptions:
-    device: str = "cpu"
+    device: str = "cuda"
     backbone_backend: str = "torch"
     knn_backend: str = "auto"
     input_size: Tuple[int, int] = (640, 640)
