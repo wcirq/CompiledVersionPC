@@ -431,7 +431,12 @@ class ModelStoreManager:
         processed_rgb = cv2.cvtColor(processed_bgr, cv2.COLOR_BGR2RGB)
         work_image, _ = resize_long_side(processed_rgb, options.infer_long_side)
         stride = options.stride if options.stride is not None else (options.crop_size[0] // 2, options.crop_size[1] // 2)
-        crops, boxes, (orig_h, orig_w), _ = engine._extract_sliding_crops(work_image, options.crop_size, stride)
+        crops, boxes, (orig_h, orig_w), _ = engine._extract_runtime_crops(
+            image_rgb=work_image,
+            crop_size=options.crop_size,
+            stride=stride,
+            enable_tiling=bool(options.enable_tiling),
+        )
         tile_dir = self._sample_tile_dir(model_id, version_id, sample["sample_id"])
         images_dir = tile_dir / "images"
         embeds_dir = tile_dir / "embeddings"
@@ -564,6 +569,7 @@ class ModelStoreManager:
         if calibrate:
             threshold = engine.calibrate_threshold(
                 image_dir=str(self._version_dir(model_id, version_id) / "processed"),
+                enable_tiling=bool(options.enable_tiling),
                 crop_size=options.crop_size,
                 stride=options.stride,
                 quantile=options.threshold_quantile,
@@ -711,6 +717,7 @@ class ModelStoreManager:
         self._emit(progress_callback, "calibrate_start", calibrate_dir=calibrate_source_dir)
         threshold = engine.calibrate_threshold(
             image_dir=calibrate_source_dir,
+            enable_tiling=bool(runtime_options.enable_tiling),
             crop_size=runtime_options.crop_size,
             stride=runtime_options.stride,
             quantile=runtime_options.threshold_quantile,
@@ -760,30 +767,108 @@ class ModelStoreManager:
         return engine, model_meta, version_meta
 
     @staticmethod
+    def _aggregate_image_score(values: List[float], mode: str = "topk_mean", topk_ratio: float = 0.01) -> float:
+        if not values:
+            return 0.0
+        arr = np.asarray(values, dtype=np.float32).reshape(-1)
+        if arr.size == 0:
+            return 0.0
+        if mode == "max":
+            return float(arr.max())
+        if mode == "topk_mean":
+            ratio = min(1.0, max(1e-6, float(topk_ratio)))
+            k = max(1, int(np.ceil(arr.size * ratio)))
+            top_values = np.partition(arr, arr.size - k)[-k:]
+            return float(top_values.mean())
+        return float(arr.mean())
+
+    @staticmethod
+    def _adaptive_component_threshold(region_heatmap: np.ndarray, global_threshold: float, min_factor: float) -> float:
+        values = np.asarray(region_heatmap, dtype=np.float32)
+        positive = values[values > 0]
+        if positive.size == 0:
+            return float(global_threshold)
+        vmin = float(positive.min())
+        vmax = float(positive.max())
+        if vmax <= vmin + 1e-6:
+            return float(max(global_threshold * float(min_factor), vmin))
+        norm = ((values - vmin) / max(vmax - vmin, 1e-6) * 255.0).clip(0, 255).astype(np.uint8)
+        otsu_threshold, _ = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        local_threshold = vmin + (float(otsu_threshold) / 255.0) * (vmax - vmin)
+        return float(max(global_threshold * float(min_factor), min(float(global_threshold), local_threshold)))
+
+    @classmethod
     def _heatmap_to_regions(
+        cls,
         heatmap: np.ndarray,
         threshold: float,
         offset_xy: Tuple[int, int],
+        postprocess_mode: str = "adaptive",
+        adaptive_region_min_factor: float = 0.75,
+        adaptive_bbox_expand_ratio: float = 0.12,
+        score_normalizer = None,
     ) -> List[Dict[str, Any]]:
-        binary = (heatmap >= threshold).astype(np.uint8) * 255
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        seed_binary = (heatmap >= threshold).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(seed_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         regions: List[Dict[str, Any]] = []
         offset_x, offset_y = offset_xy
-        for contour in contours:
-            if contour.shape[0] < 3:
+        heatmap_h, heatmap_w = heatmap.shape[:2]
+        for seed_contour in contours:
+            if seed_contour.shape[0] < 3:
                 continue
-            contour = contour.reshape(-1, 2)
+            contour = seed_contour.reshape(-1, 2)
             x, y, w, h = cv2.boundingRect(contour.astype(np.int32))
+            if postprocess_mode == "adaptive":
+                expand_ratio = max(0.0, float(adaptive_bbox_expand_ratio))
+                ex = int(round(w * expand_ratio))
+                ey = int(round(h * expand_ratio))
+                x1 = max(0, x - ex)
+                y1 = max(0, y - ey)
+                x2 = min(heatmap_w, x + w + ex)
+                y2 = min(heatmap_h, y + h + ey)
+                window_heat = heatmap[y1:y2, x1:x2]
+                local_threshold = cls._adaptive_component_threshold(window_heat, threshold, adaptive_region_min_factor)
+                local_binary = (window_heat >= local_threshold).astype(np.uint8) * 255
+                local_contours, _ = cv2.findContours(local_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                center_x = x + (w / 2.0)
+                center_y = y + (h / 2.0)
+                best_contour = None
+                best_distance = None
+                for candidate in local_contours:
+                    if candidate.shape[0] < 3:
+                        continue
+                    cx, cy, cw, ch = cv2.boundingRect(candidate.astype(np.int32))
+                    candidate_center_x = x1 + cx + (cw / 2.0)
+                    candidate_center_y = y1 + cy + (ch / 2.0)
+                    distance = (candidate_center_x - center_x) ** 2 + (candidate_center_y - center_y) ** 2
+                    if best_contour is None or distance < best_distance:
+                        best_contour = candidate
+                        best_distance = distance
+                if best_contour is not None:
+                    contour = best_contour.reshape(-1, 2)
+                    contour[:, 0] += x1
+                    contour[:, 1] += y1
+                    x, y, w, h = cv2.boundingRect(contour.astype(np.int32))
+                    score_threshold = local_threshold
+                else:
+                    score_threshold = threshold
+            else:
+                score_threshold = threshold
             region_heat = heatmap[y:y + h, x:x + w]
-            score = float(region_heat[region_heat >= threshold].mean()) if np.any(region_heat >= threshold) else float(region_heat.mean())
+            score_raw = float(region_heat[region_heat >= score_threshold].mean()) if np.any(region_heat >= score_threshold) else float(region_heat.mean())
+            score_normalized = float(score_normalizer(score_raw)) if score_normalizer is not None else None
             regions.append(
                 {
                     "contour": [[int(px + offset_x), int(py + offset_y)] for px, py in contour.tolist()],
                     "box": [int(x + offset_x), int(y + offset_y), int(x + w + offset_x), int(y + h + offset_y)],
-                    "score": score,
+                    "score": score_raw,
+                    "score_raw": score_raw,
+                    "score_normalized": score_normalized,
+                    "score_percent": None if score_normalized is None else round(score_normalized * 100.0, 2),
+                    "region_threshold": float(score_threshold),
                 }
             )
-        regions.sort(key=lambda item: item["score"], reverse=True)
+        regions.sort(key=lambda item: item["score_raw"], reverse=True)
         return regions
 
     def detect_image(
@@ -794,17 +879,35 @@ class ModelStoreManager:
         image_bgr: Optional[np.ndarray] = None,
         include_heatmap_base64: bool = False,
         threshold: Optional[float] = None,
+        threshold_percent: Optional[float] = None,
         heatmap_include_background: bool = True,
         heatmap_zero_below_threshold: Optional[bool] = None,
+        enable_tiling: Optional[bool] = None,
+        postprocess_mode: Optional[str] = None,
+        score_aggregation: Optional[str] = None,
     ) -> Dict[str, Any]:
         engine, model_meta, version_meta = self._load_engine_for_model(model_id)
         runtime_options = RuntimeOptions(**version_meta["runtime_options"])
-        active_threshold = float(threshold if threshold is not None else (version_meta.get("threshold") or engine.recommended_threshold or 1.0))
+        default_threshold = float(version_meta.get("threshold") or engine.recommended_threshold or 1.0)
+        normalized_threshold = None
+        if threshold_percent is not None:
+            normalized_threshold = float(np.clip(float(threshold_percent) / 100.0, 0.0, 1.0))
+            active_threshold = float(engine.denormalize_image_score(normalized_threshold, default_threshold))
+        else:
+            active_threshold = float(threshold if threshold is not None else default_threshold)
+            normalized_threshold = float(engine.normalize_image_score(active_threshold, default_threshold))
         zero_below_threshold = (
             runtime_options.heatmap_zero_below_threshold
             if heatmap_zero_below_threshold is None
             else bool(heatmap_zero_below_threshold)
         )
+        active_enable_tiling = bool(runtime_options.enable_tiling) if enable_tiling is None else bool(enable_tiling)
+        active_postprocess_mode = (postprocess_mode or runtime_options.postprocess_mode or "adaptive").strip().lower()
+        active_score_aggregation = (score_aggregation or runtime_options.score_aggregation or "topk_mean").strip().lower()
+        if active_postprocess_mode not in {"adaptive", "threshold"}:
+            active_postprocess_mode = "adaptive"
+        if active_score_aggregation not in {"mean", "max", "topk_mean"}:
+            active_score_aggregation = "topk_mean"
         image_bgr = maybe_load_image_bgr(image_path=image_path, image_bytes=image_bytes, image_bgr=image_bgr)
         roofs = self.segmenter.segment_image(image_bgr)
         if not roofs:
@@ -812,12 +915,26 @@ class ModelStoreManager:
                 "model_id": model_id,
                 "model_name": model_meta["model_name"],
                 "threshold": active_threshold,
+                "threshold_default": default_threshold,
+                "threshold_normalized": normalized_threshold,
+                "threshold_percent": round(float(normalized_threshold) * 100.0, 2),
                 "is_anomaly": False,
                 "score": 0.0,
+                "score_raw": 0.0,
+                "score_normalized": 0.0,
+                "score_percent": 0.0,
                 "roof_contours": [],
                 "anomaly_regions": [],
                 "heatmap_include_background": bool(heatmap_include_background),
                 "heatmap_zero_below_threshold": bool(zero_below_threshold),
+                "score_aggregation": active_score_aggregation,
+                "postprocess_mode": active_postprocess_mode,
+                "tiling": {
+                    "enabled": active_enable_tiling,
+                    "crop_size": list(runtime_options.crop_size),
+                    "stride": list(runtime_options.stride),
+                    "infer_long_side": int(runtime_options.infer_long_side),
+                },
                 "message": "No train roof contour detected.",
             }
 
@@ -825,6 +942,7 @@ class ModelStoreManager:
         score_values: List[float] = []
         anomaly_regions: List[Dict[str, Any]] = []
         roof_contours: List[List[List[int]]] = []
+        engine_zero_below_threshold = bool(zero_below_threshold) if active_postprocess_mode != "adaptive" else False
 
         for roof in roofs:
             roof_contours.append(roof.contour)
@@ -832,12 +950,13 @@ class ModelStoreManager:
             crop_rgb = cv2.cvtColor(roof.masked_crop_bgr, cv2.COLOR_BGR2RGB)
             _, _, crop_heatmap = engine.detect_image(
                 image_rgb=crop_rgb,
+                enable_tiling=active_enable_tiling,
                 crop_size=runtime_options.crop_size,
                 stride=runtime_options.stride,
                 threshold=active_threshold,
                 detect_batch_size=runtime_options.detect_batch_size,
                 infer_long_side=runtime_options.infer_long_side,
-                heatmap_zero_below_threshold=zero_below_threshold,
+                heatmap_zero_below_threshold=engine_zero_below_threshold,
             )
             crop_mask = roof.mask_crop > 0
             if crop_heatmap.shape[:2] != crop_mask.shape[:2]:
@@ -847,28 +966,82 @@ class ModelStoreManager:
             full_heatmap[y1:y2, x1:x2] = np.maximum(full_heatmap[y1:y2, x1:x2], crop_heatmap)
             if np.any(crop_mask):
                 score_values.extend(crop_heatmap[crop_mask].reshape(-1).tolist())
-            anomaly_regions.extend(self._heatmap_to_regions(crop_heatmap, active_threshold, (x1, y1)))
+            anomaly_regions.extend(
+                self._heatmap_to_regions(
+                    crop_heatmap,
+                    active_threshold,
+                    (x1, y1),
+                    postprocess_mode=active_postprocess_mode,
+                    adaptive_region_min_factor=float(runtime_options.adaptive_region_min_factor),
+                    adaptive_bbox_expand_ratio=float(runtime_options.adaptive_bbox_expand_ratio),
+                    score_normalizer=lambda value, eng=engine, threshold_value=default_threshold: eng.normalize_heatmap_score(value, threshold_value),
+                )
+            )
 
-        score = float(np.mean(score_values)) if score_values else 0.0
-        is_anomaly = any(region["score"] >= active_threshold for region in anomaly_regions)
+        score_raw = self._aggregate_image_score(
+            score_values,
+            mode=active_score_aggregation,
+            topk_ratio=float(runtime_options.score_topk_ratio),
+        )
+        score_normalized = engine.normalize_image_score(score_raw, default_threshold)
+        score_percent = round(score_normalized * 100.0, 2)
+        has_region_above_threshold = any(region["score_raw"] >= active_threshold for region in anomaly_regions)
+        is_anomaly = bool(score_raw >= active_threshold or has_region_above_threshold)
 
         response = {
             "model_id": model_id,
             "model_name": model_meta["model_name"],
             "version_id": model_meta["current_version_id"],
             "threshold": active_threshold,
+            "threshold_default": default_threshold,
+            "threshold_normalized": normalized_threshold,
+            "threshold_percent": round(float(normalized_threshold) * 100.0, 2),
             "is_anomaly": is_anomaly,
-            "score": score,
+            "score": score_raw,
+            "score_raw": score_raw,
+            "score_normalized": score_normalized,
+            "score_percent": score_percent,
+            "has_region_above_threshold": has_region_above_threshold,
+            "score_aggregation": active_score_aggregation,
+            "postprocess_mode": active_postprocess_mode,
             "roof_contours": roof_contours,
             "anomaly_regions": anomaly_regions,
             "heatmap_include_background": bool(heatmap_include_background),
             "heatmap_zero_below_threshold": bool(zero_below_threshold),
+            "tiling": {
+                "enabled": active_enable_tiling,
+                "crop_size": list(runtime_options.crop_size),
+                "stride": list(runtime_options.stride),
+                "infer_long_side": int(runtime_options.infer_long_side),
+            },
+            "postprocess": {
+                "mode": active_postprocess_mode,
+                "score_aggregation": active_score_aggregation,
+                "score_topk_ratio": float(runtime_options.score_topk_ratio),
+                "adaptive_region_min_factor": float(runtime_options.adaptive_region_min_factor),
+                "adaptive_bbox_expand_ratio": float(runtime_options.adaptive_bbox_expand_ratio),
+            },
+            "normalization": {
+                "score_min": engine.score_min,
+                "score_max": engine.score_max,
+                "heatmap_vis_min": engine.heatmap_vis_min,
+                "heatmap_vis_max": engine.heatmap_vis_max,
+                "threshold_default": default_threshold,
+                "threshold_normalized": normalized_threshold,
+                "threshold_percent": round(float(normalized_threshold) * 100.0, 2),
+                "default_threshold_normalized": 0.5,
+                "default_threshold_percent": 50.0,
+            },
         }
 
         if include_heatmap_base64:
             vis_min = float(engine.heatmap_vis_min) if engine.heatmap_vis_min is not None else 0.0
             vis_max = float(engine.heatmap_vis_max) if engine.heatmap_vis_max is not None else max(active_threshold, 1e-6)
-            heat_u8 = np.clip((full_heatmap - vis_min) / max(vis_max - vis_min, 1e-6), 0.0, 1.0)
+            display_heatmap = full_heatmap
+            if zero_below_threshold:
+                display_heatmap = full_heatmap.copy()
+                display_heatmap[display_heatmap < active_threshold] = 0.0
+            heat_u8 = np.clip((display_heatmap - vis_min) / max(vis_max - vis_min, 1e-6), 0.0, 1.0)
             heat_u8 = (heat_u8 * 255).astype(np.uint8)
             heat_color = cv2.applyColorMap(heat_u8, cv2.COLORMAP_JET)
             heatmap_image = cv2.addWeighted(image_bgr, 0.55, heat_color, 0.45, 0) if heatmap_include_background else heat_color
@@ -918,14 +1091,16 @@ class ModelStoreManager:
 
         for sample in samples:
             image_rgb = cv2.cvtColor(read_image_bgr(sample["processed_image_path"]), cv2.COLOR_BGR2RGB)
+            version_runtime_options = version_meta["runtime_options"]
             is_anomaly, score, _ = engine.detect_image(
                 image_rgb=image_rgb,
-                crop_size=tuple(version_meta["runtime_options"]["crop_size"]),
-                stride=tuple(version_meta["runtime_options"]["stride"]),
+                enable_tiling=bool(version_runtime_options.get("enable_tiling", False)),
+                crop_size=tuple(version_runtime_options["crop_size"]),
+                stride=tuple(version_runtime_options["stride"]),
                 threshold=active_threshold,
-                detect_batch_size=int(version_meta["runtime_options"]["detect_batch_size"]),
-                infer_long_side=int(version_meta["runtime_options"]["infer_long_side"]),
-                heatmap_zero_below_threshold=bool(version_meta["runtime_options"]["heatmap_zero_below_threshold"]),
+                detect_batch_size=int(version_runtime_options["detect_batch_size"]),
+                infer_long_side=int(version_runtime_options["infer_long_side"]),
+                heatmap_zero_below_threshold=bool(version_runtime_options["heatmap_zero_below_threshold"]),
             )
             sample["last_scan_score"] = float(score)
             sample["last_scan_is_anomaly"] = bool(is_anomaly)

@@ -41,6 +41,9 @@ class DetectRequest(BaseModel):
     threshold: Optional[float] = None
     heatmap_include_background: bool = True
     heatmap_zero_below_threshold: Optional[bool] = None
+    enable_tiling: Optional[bool] = None
+    postprocess_mode: Optional[str] = None
+    score_aggregation: Optional[str] = None
 
 
 class SampleUpdateRequest(BaseModel):
@@ -637,8 +640,12 @@ def build_app(manager) -> FastAPI:
         image_path: Optional[str] = Form(None),
         include_heatmap_base64: bool = Form(False),
         threshold: Optional[float] = Form(None),
+        threshold_percent: Optional[float] = Form(None),
         heatmap_include_background: bool = Form(True),
         heatmap_zero_below_threshold: Optional[bool] = Form(None),
+        enable_tiling: Optional[bool] = Form(None),
+        postprocess_mode: Optional[str] = Form(None),
+        score_aggregation: Optional[str] = Form(None),
         image_file: Optional[UploadFile] = File(None),
     ) -> Dict[str, Any]:
         try:
@@ -649,8 +656,12 @@ def build_app(manager) -> FastAPI:
                 image_bytes=image_bytes,
                 include_heatmap_base64=include_heatmap_base64,
                 threshold=threshold,
+                threshold_percent=threshold_percent,
                 heatmap_include_background=heatmap_include_background,
                 heatmap_zero_below_threshold=heatmap_zero_below_threshold,
+                enable_tiling=enable_tiling,
+                postprocess_mode=postprocess_mode,
+                score_aggregation=score_aggregation,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -17,6 +17,7 @@ store_data/
 .idea/
 export/
 weights/
+suanneng/
 
 # Runtime caches
 embedding_cache/

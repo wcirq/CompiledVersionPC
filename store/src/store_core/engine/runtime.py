@@ -163,6 +163,8 @@ class VisionMemoryEngine:
 
         self.score_mean: Optional[float] = None
         self.score_std: Optional[float] = None
+        self.score_min: Optional[float] = None
+        self.score_max: Optional[float] = None
         self.recommended_threshold: Optional[float] = None
         self.heatmap_mean: Optional[float] = None
         self.heatmap_std: Optional[float] = None
@@ -237,6 +239,47 @@ class VisionMemoryEngine:
         if merged.size > max_samples:
             merged = merged[rng.choice(merged.size, size=max_samples, replace=False)]
         return merged
+
+    @staticmethod
+    def normalize_score_with_reference(
+        score: float,
+        threshold: float,
+        ref_min: Optional[float],
+        ref_max: Optional[float],
+    ) -> float:
+        score = float(score)
+        threshold = float(threshold)
+        ref_min = float(ref_min) if ref_min is not None else min(0.0, threshold)
+        ref_max = float(ref_max) if ref_max is not None else max(threshold, score, 1e-6)
+        denom = max(ref_max - ref_min, 1e-6)
+        normalized = ((score - threshold) / denom) + 0.5
+        return float(np.clip(normalized, 0.0, 1.0))
+
+    def normalize_image_score(self, score: float, threshold: float) -> float:
+        return self.normalize_score_with_reference(score, threshold, self.score_min, self.score_max)
+
+    def normalize_heatmap_score(self, score: float, threshold: float) -> float:
+        return self.normalize_score_with_reference(score, threshold, self.heatmap_vis_min, self.heatmap_vis_max)
+
+    @staticmethod
+    def denormalize_score_with_reference(
+        normalized: float,
+        threshold: float,
+        ref_min: Optional[float],
+        ref_max: Optional[float],
+    ) -> float:
+        normalized = float(np.clip(normalized, 0.0, 1.0))
+        threshold = float(threshold)
+        ref_min = float(ref_min) if ref_min is not None else min(0.0, threshold)
+        ref_max = float(ref_max) if ref_max is not None else max(threshold, ref_min + 1e-6)
+        denom = max(ref_max - ref_min, 1e-6)
+        return float(threshold + ((normalized - 0.5) * denom))
+
+    def denormalize_image_score(self, normalized: float, threshold: float) -> float:
+        return self.denormalize_score_with_reference(normalized, threshold, self.score_min, self.score_max)
+
+    def denormalize_heatmap_score(self, normalized: float, threshold: float) -> float:
+        return self.denormalize_score_with_reference(normalized, threshold, self.heatmap_vis_min, self.heatmap_vis_max)
 
     def _init_projector(self):
         if self.target_embed_dimension <= 0:
@@ -316,6 +359,21 @@ class VisionMemoryEngine:
                 crops.append(padded[y:y + crop_h, x:x + crop_w])
                 boxes.append((y, y + crop_h, x, x + crop_w))
         return crops, boxes, (orig_h, orig_w), padded
+
+    def _extract_runtime_crops(
+        self,
+        image_rgb: np.ndarray,
+        crop_size: Tuple[int, int],
+        stride: Optional[Tuple[int, int]] = None,
+        enable_tiling: bool = False,
+        pad_value: int = 255,
+    ):
+        orig_h, orig_w = image_rgb.shape[:2]
+        if not enable_tiling:
+            return [image_rgb], [(0, orig_h, 0, orig_w)], (orig_h, orig_w), image_rgb
+        if stride is None:
+            stride = (max(1, crop_size[0] // 2), max(1, crop_size[1] // 2))
+        return self._extract_sliding_crops(image_rgb=image_rgb, crop_size=crop_size, stride=stride, pad_value=pad_value)
 
     def _merge_features(self, feat2: torch.Tensor, feat3: torch.Tensor):
         feat3_h = int(feat3.shape[2])
@@ -413,6 +471,7 @@ class VisionMemoryEngine:
     def build_memory_bank(
         self,
         image_dir: str,
+        enable_tiling: bool = False,
         crop_size: Tuple[int, int] = (160, 160),
         stride: Optional[Tuple[int, int]] = None,
         batch_size: int = 32,
@@ -489,7 +548,12 @@ class VisionMemoryEngine:
                     if stride is None
                     else scale_stride_with_crop(crop_size, cur_crop_size, stride, round_multiple=1)
                 )
-                crops, _, _, _ = self._extract_sliding_crops(image_rgb=image_rgb, crop_size=cur_crop_size, stride=cur_stride)
+                crops, _, _, _ = self._extract_runtime_crops(
+                    image_rgb=image_rgb,
+                    crop_size=cur_crop_size,
+                    stride=cur_stride,
+                    enable_tiling=enable_tiling,
+                )
                 for crop in crops:
                     batch_crops.extend(self._generate_augmented_crops(crop))
                     if len(batch_crops) >= batch_size:
@@ -531,6 +595,7 @@ class VisionMemoryEngine:
     def _compute_score_map(
         self,
         image_rgb: np.ndarray,
+        enable_tiling: bool = False,
         crop_size: Tuple[int, int] = (160, 160),
         stride: Optional[Tuple[int, int]] = None,
         detect_batch_size: int = 8,
@@ -543,10 +608,12 @@ class VisionMemoryEngine:
 
         orig_h0, orig_w0 = image_rgb.shape[:2]
         work_image, infer_scale = resize_long_side(image_rgb, infer_long_side)
-        if stride is None:
-            stride = (crop_size[0] // 2, crop_size[1] // 2)
-
-        crops, boxes, (orig_h, orig_w), padded = self._extract_sliding_crops(work_image, crop_size, stride)
+        crops, boxes, (orig_h, orig_w), padded = self._extract_runtime_crops(
+            image_rgb=work_image,
+            crop_size=crop_size,
+            stride=stride,
+            enable_tiling=enable_tiling,
+        )
         full_heatmap = np.zeros(padded.shape[:2], dtype=np.float32)
         count_map = np.zeros(padded.shape[:2], dtype=np.float32)
         global_score = -1e18
@@ -561,7 +628,9 @@ class VisionMemoryEngine:
             global_score = max(global_score, float(patch_scores.max()))
 
             for i, (y1, y2, x1, x2) in enumerate(boxes[st:ed]):
-                score_map = cv2.resize(patch_scores[i], (crop_size[1], crop_size[0]), interpolation=cv2.INTER_CUBIC)
+                box_h = max(1, int(y2 - y1))
+                box_w = max(1, int(x2 - x1))
+                score_map = cv2.resize(patch_scores[i], (box_w, box_h), interpolation=cv2.INTER_CUBIC)
                 full_heatmap[y1:y2, x1:x2] += score_map
                 count_map[y1:y2, x1:x2] += 1.0
 
@@ -574,6 +643,7 @@ class VisionMemoryEngine:
     def calibrate_threshold(
         self,
         image_dir: str,
+        enable_tiling: bool = False,
         crop_size: Tuple[int, int] = (160, 160),
         stride: Optional[Tuple[int, int]] = None,
         quantile: float = 0.99,
@@ -594,7 +664,14 @@ class VisionMemoryEngine:
 
         for img_path in tqdm(image_paths, desc="Calibrating threshold"):
             image_rgb = read_image_rgb(img_path)
-            score, heatmap = self._compute_score_map(image_rgb, crop_size, stride, detect_batch_size, infer_long_side)
+            score, heatmap = self._compute_score_map(
+                image_rgb,
+                enable_tiling=enable_tiling,
+                crop_size=crop_size,
+                stride=stride,
+                detect_batch_size=detect_batch_size,
+                infer_long_side=infer_long_side,
+            )
             scores.append(score)
             if not fast_calibrate:
                 sampled_heat_values = self._update_online_sample_pool(
@@ -607,6 +684,8 @@ class VisionMemoryEngine:
         scores = np.array(scores, dtype=np.float32)
         self.score_mean = float(scores.mean())
         self.score_std = float(scores.std())
+        self.score_min = float(scores.min())
+        self.score_max = float(scores.max())
         self.recommended_threshold = float(np.quantile(scores, quantile))
 
         if sampled_heat_values is not None and sampled_heat_values.size > 0:
@@ -628,6 +707,7 @@ class VisionMemoryEngine:
     def detect_image(
         self,
         image_rgb: np.ndarray,
+        enable_tiling: bool = False,
         crop_size: Tuple[int, int] = (160, 160),
         stride: Optional[Tuple[int, int]] = None,
         threshold: float = 1.0,
@@ -639,7 +719,14 @@ class VisionMemoryEngine:
         infer_long_side: int = 0,
         heatmap_zero_below_threshold: bool = False,
     ):
-        global_score, full_heatmap = self._compute_score_map(image_rgb, crop_size, stride, detect_batch_size, infer_long_side)
+        global_score, full_heatmap = self._compute_score_map(
+            image_rgb,
+            enable_tiling=enable_tiling,
+            crop_size=crop_size,
+            stride=stride,
+            detect_batch_size=detect_batch_size,
+            infer_long_side=infer_long_side,
+        )
         is_anomaly = bool(global_score > threshold)
 
         if heatmap_zero_below_threshold:
@@ -704,6 +791,7 @@ class VisionMemoryEngine:
     def detect_batch(
         self,
         image_dir: str,
+        enable_tiling: bool = False,
         crop_size: Tuple[int, int] = (160, 160),
         stride: Optional[Tuple[int, int]] = None,
         threshold: float = 1.0,
@@ -722,6 +810,7 @@ class VisionMemoryEngine:
                 heatmap_path = os.path.join(output_dir, f"{Path(img_path).stem}_overlay.jpg") if output_dir else None
                 is_anomaly, score, _ = self.detect(
                     image_path=img_path,
+                    enable_tiling=enable_tiling,
                     crop_size=crop_size,
                     stride=stride,
                     threshold=threshold,
@@ -796,6 +885,8 @@ class VisionMemoryEngine:
                 "project_matrix": self.project_matrix,
                 "score_mean": self.score_mean,
                 "score_std": self.score_std,
+                "score_min": self.score_min,
+                "score_max": self.score_max,
                 "recommended_threshold": self.recommended_threshold,
                 "heatmap_mean": self.heatmap_mean,
                 "heatmap_std": self.heatmap_std,
@@ -914,6 +1005,8 @@ class VisionMemoryEngine:
         self.project_matrix = data.get("project_matrix", self.project_matrix)
         self.score_mean = data.get("score_mean")
         self.score_std = data.get("score_std")
+        self.score_min = data.get("score_min")
+        self.score_max = data.get("score_max")
         self.recommended_threshold = data.get("recommended_threshold")
         self.heatmap_mean = data.get("heatmap_mean")
         self.heatmap_std = data.get("heatmap_std")
@@ -927,15 +1020,19 @@ class VisionMemoryEngine:
     def extract_image_embeddings(
         self,
         image_rgb: np.ndarray,
+        enable_tiling: bool = False,
         crop_size: Tuple[int, int] = (160, 160),
         stride: Optional[Tuple[int, int]] = None,
         detect_batch_size: int = 8,
         infer_long_side: int = 0,
     ) -> torch.Tensor:
         work_image, _ = resize_long_side(image_rgb, infer_long_side)
-        if stride is None:
-            stride = (crop_size[0] // 2, crop_size[1] // 2)
-        crops, _, _, _ = self._extract_sliding_crops(work_image, crop_size, stride)
+        crops, _, _, _ = self._extract_runtime_crops(
+            image_rgb=work_image,
+            crop_size=crop_size,
+            stride=stride,
+            enable_tiling=enable_tiling,
+        )
         if not crops:
             raise ValueError("No valid crops extracted from image.")
         outputs = []

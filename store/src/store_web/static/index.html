@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>列车顶视觉检测平台</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260516-train">
+  <link rel="stylesheet" href="/static/style.css?v=20260516-anomalib-a-b">
 </head>
 <body>
   <div class="page">
@@ -113,11 +113,32 @@
           </label>
           <div class="append-options-row">
             <label class="append-option-field" for="detectThreshold">
-              <span id="detectThresholdLabel">Threshold</span>
+              <span id="detectThresholdLabel">异常度阈值 (%)</span>
               <div class="inline-option-row">
-                <input id="detectThreshold" type="number" step="0.1" placeholder="留空则使用模型默认值">
+                <input id="detectThreshold" type="number" step="0.1" min="0" max="100" placeholder="留空则使用模型默认值">
                 <button type="button" id="rerunDetectBtn" class="secondary-button">重新检测</button>
               </div>
+            </label>
+            <label class="append-option-field" for="detectPostprocessMode">
+              <span>后处理模式</span>
+              <select id="detectPostprocessMode">
+                <option value="">使用模型默认值</option>
+                <option value="adaptive">Adaptive</option>
+                <option value="threshold">Threshold</option>
+              </select>
+            </label>
+            <label class="append-option-field" for="detectScoreAggregation">
+              <span>图像分数聚合</span>
+              <select id="detectScoreAggregation">
+                <option value="">使用模型默认值</option>
+                <option value="topk_mean">TopK Mean</option>
+                <option value="max">Max</option>
+                <option value="mean">Mean</option>
+              </select>
+            </label>
+            <label class="append-check-field" for="detectEnableTiling">
+              <input id="detectEnableTiling" type="checkbox">
+              <span>启用 Tiling</span>
             </label>
             <label class="append-check-field" for="detectIncludeHeatmap">
               <input id="detectIncludeHeatmap" type="checkbox" checked>
@@ -226,9 +247,9 @@
         <h2>向量库样本</h2>
         <button type="button" class="modal-close" data-close-modal="samplesModal">关闭</button>
       </div>
-      <div class="panel-head">
-        <div id="samplesModalMeta" class="append-heatmap-meta">请选择模型后查看</div>
-        <div class="pager">
+      <div class="panel-head samples-modal-toolbar">
+        <div id="samplesModalMeta" class="append-heatmap-meta samples-modal-meta">请选择模型后查看</div>
+        <div class="pager samples-modal-pager">
           <button id="prevPageBtn">上一页</button>
           <span id="pageLabel">1 / 1</span>
           <button id="nextPageBtn">下一页</button>
@@ -297,6 +318,10 @@
           <div id="trainDirSummary">训练图片: 未选择</div>
           <div id="trainCalibrateSummary">校准图片: 未选择</div>
         </div>
+        <label class="append-check-field" for="trainEnableTiling">
+          <input id="trainEnableTiling" type="checkbox">
+          <span>启用 Tiling</span>
+        </label>
         <div class="panel subtle-panel train-json-panel">
           <div class="panel-head">
             <h3>训练参数</h3>
@@ -394,8 +419,29 @@
         </div>
         <div class="append-options-row">
           <label class="append-option-field" for="appendThreshold">
-            <span id="appendThresholdLabel">Threshold</span>
-            <input id="appendThreshold" type="number" step="0.1" placeholder="留空则使用模型默认值">
+            <span id="appendThresholdLabel">异常度阈值 (%)</span>
+            <input id="appendThreshold" type="number" step="0.1" min="0" max="100" placeholder="留空则使用模型默认值">
+          </label>
+          <label class="append-option-field" for="appendPostprocessMode">
+            <span>后处理模式</span>
+            <select id="appendPostprocessMode">
+              <option value="">使用模型默认值</option>
+              <option value="adaptive">Adaptive</option>
+              <option value="threshold">Threshold</option>
+            </select>
+          </label>
+          <label class="append-option-field" for="appendScoreAggregation">
+            <span>图像分数聚合</span>
+            <select id="appendScoreAggregation">
+              <option value="">使用模型默认值</option>
+              <option value="topk_mean">TopK Mean</option>
+              <option value="max">Max</option>
+              <option value="mean">Mean</option>
+            </select>
+          </label>
+          <label class="append-check-field" for="appendEnableTiling">
+            <input id="appendEnableTiling" type="checkbox">
+            <span>启用 Tiling</span>
           </label>
           <label class="append-option-field" for="appendMaxVectors">
             <span>追加向量上限</span>
@@ -483,6 +529,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=20260516-train"></script>
+  <script src="/static/app.js?v=20260516-anomalib-a-b"></script>
 </body>
 </html>

@@ -183,7 +183,7 @@ if __name__ == '__main__':
         yolo_conf_threshold=0.2,
     )
     # model_id = test_store_train(store)
-    test_store_predict(store, model_id=model_id)
-    test_store_batch_predict(store, model_id=model_id)
+    # test_store_predict(store, model_id=model_id)
+    # test_store_batch_predict(store, model_id=model_id)
 
     store.serve_forever()

@@ -87,8 +87,12 @@ class TrainRoofAnomalyStore:
         image_bgr: Optional[np.ndarray] = None,
         include_heatmap_base64: bool = False,
         threshold: Optional[float] = None,
+        threshold_percent: Optional[float] = None,
         heatmap_include_background: bool = True,
         heatmap_zero_below_threshold: Optional[bool] = None,
+        enable_tiling: Optional[bool] = None,
+        postprocess_mode: Optional[str] = None,
+        score_aggregation: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self.manager.detect_image(
             model_id=model_id,
@@ -97,8 +101,12 @@ class TrainRoofAnomalyStore:
             image_bgr=image_bgr,
             include_heatmap_base64=include_heatmap_base64,
             threshold=threshold,
+            threshold_percent=threshold_percent,
             heatmap_include_background=heatmap_include_background,
             heatmap_zero_below_threshold=heatmap_zero_below_threshold,
+            enable_tiling=enable_tiling,
+            postprocess_mode=postprocess_mode,
+            score_aggregation=score_aggregation,
         )
 
     def list_models(self) -> Dict[str, Any]:

@@ -20,6 +20,7 @@ class RuntimeOptions:
     backbone_backend: str = "torch"
     knn_backend: str = "auto"
     input_size: Tuple[int, int] = (640, 640)
+    enable_tiling: bool = False
     crop_size: Tuple[int, int] = (640, 640)
     stride: Tuple[int, int] = (512, 512)
     batch_size: int = 32
@@ -36,6 +37,11 @@ class RuntimeOptions:
     heatmap_quantile: float = 0.999
     max_heatmap_samples: int = 2_000_000
     fast_calibrate: bool = False
+    postprocess_mode: str = "adaptive"
+    score_aggregation: str = "topk_mean"
+    score_topk_ratio: float = 0.01
+    adaptive_region_min_factor: float = 0.75
+    adaptive_bbox_expand_ratio: float = 0.12
     max_embeddings: int = 1_200_000
     train_crop_scale_range: Tuple[float, float] = (0.7, 1.3)
     train_crop_round_multiple: int = 8

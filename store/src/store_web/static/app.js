@@ -46,9 +46,9 @@ function setActiveView(view) {
   document.getElementById("inferWorkbench").classList.toggle("hidden", state.activeView !== "infer");
 }
 
-function formatThresholdLabel(baseLabel, threshold) {
-  return Number.isFinite(threshold)
-    ? `${baseLabel}（默认 ${Number(threshold).toFixed(4)}）`
+function formatThresholdLabel(baseLabel, thresholdPercent) {
+  return Number.isFinite(thresholdPercent)
+    ? `${baseLabel}（默认 ${Number(thresholdPercent).toFixed(1)}%）`
     : `${baseLabel}（默认未设置）`;
 }
 
@@ -96,14 +96,60 @@ function updateThresholdInputs(threshold) {
   const appendLabel = document.getElementById("appendThresholdLabel");
   const detectInput = document.getElementById("detectThreshold");
   const appendInput = document.getElementById("appendThreshold");
-  detectLabel.textContent = formatThresholdLabel("Threshold", threshold);
-  appendLabel.textContent = formatThresholdLabel("Threshold", threshold);
-  detectInput.placeholder = Number.isFinite(threshold)
-    ? `留空则使用默认值 ${Number(threshold).toFixed(4)}`
+  const defaultThresholdPercent = Number.isFinite(threshold) ? 50 : null;
+  detectLabel.textContent = formatThresholdLabel("异常度阈值 (%)", defaultThresholdPercent);
+  appendLabel.textContent = formatThresholdLabel("异常度阈值 (%)", defaultThresholdPercent);
+  detectInput.placeholder = Number.isFinite(defaultThresholdPercent)
+    ? `留空则使用默认值 ${Number(defaultThresholdPercent).toFixed(1)}%`
     : "留空则使用模型默认值";
-  appendInput.placeholder = Number.isFinite(threshold)
-    ? `留空则使用默认值 ${Number(threshold).toFixed(4)}`
+  appendInput.placeholder = Number.isFinite(defaultThresholdPercent)
+    ? `留空则使用默认值 ${Number(defaultThresholdPercent).toFixed(1)}%`
     : "留空则使用模型默认值";
+}
+
+function formatDetectSummary(result, includeHeatmap) {
+  const anomalyCount = Array.isArray(result.anomaly_regions) ? result.anomaly_regions.length : 0;
+  const scorePercent = Number.isFinite(result.score_percent) ? `${Number(result.score_percent).toFixed(2)}%` : "-";
+  const scoreRaw = Number.isFinite(result.score_raw) ? Number(result.score_raw).toFixed(4) : "-";
+  const thresholdPercent = Number.isFinite(result.threshold_percent) ? `${Number(result.threshold_percent).toFixed(2)}%` : "-";
+  const thresholdRaw = Number.isFinite(result.threshold) ? Number(result.threshold).toFixed(4) : "-";
+  const extraMessage = result.message
+    ? ` ${result.message}`
+    : (includeHeatmap && !result.heatmap_base64 ? " 未返回热力图" : "");
+  return `异常度=${scorePercent} 阈值=${thresholdPercent} raw=${scoreRaw} raw_threshold=${thresholdRaw} 区域=${anomalyCount} 模式=${result.postprocess_mode || "-"} 聚合=${result.score_aggregation || "-"} 结果=${result.is_anomaly ? "异常" : "正常"}${extraMessage}`;
+}
+
+function syncDetectConfigFromRuntimeOptions(options = {}) {
+  document.getElementById("detectPostprocessMode").value = options.postprocess_mode || "";
+  document.getElementById("detectScoreAggregation").value = options.score_aggregation || "";
+  document.getElementById("detectEnableTiling").checked = Boolean(options.enable_tiling);
+  document.getElementById("appendPostprocessMode").value = options.postprocess_mode || "";
+  document.getElementById("appendScoreAggregation").value = options.score_aggregation || "";
+  document.getElementById("appendEnableTiling").checked = Boolean(options.enable_tiling);
+}
+
+function syncTrainTilingCheckboxFromRuntimeOptions(options = {}) {
+  document.getElementById("trainEnableTiling").checked = Boolean(options.enable_tiling);
+}
+
+function syncTrainRuntimeOptionsEditorFromObject(options = {}) {
+  document.getElementById("trainRuntimeOptions").value = JSON.stringify(options, null, 2);
+  syncTrainTilingCheckboxFromRuntimeOptions(options);
+}
+
+function getTrainRuntimeOptionsEditorObject() {
+  return JSON.parse(document.getElementById("trainRuntimeOptions").value.trim() || "{}");
+}
+
+function updateTrainRuntimeOptionsEditor(patch = {}) {
+  let options = {};
+  try {
+    options = getTrainRuntimeOptionsEditorObject();
+  } catch (_) {
+    return;
+  }
+  Object.assign(options, patch);
+  syncTrainRuntimeOptionsEditorFromObject(options);
 }
 
 async function api(url, options = {}) {
@@ -267,6 +313,12 @@ function refreshDetectEntryState() {
     document.getElementById("saveModelThresholdBtn").disabled = true;
     document.getElementById("detectThreshold").value = "";
     document.getElementById("appendThreshold").value = "";
+    document.getElementById("detectPostprocessMode").value = "";
+    document.getElementById("detectScoreAggregation").value = "";
+    document.getElementById("detectEnableTiling").checked = false;
+    document.getElementById("appendPostprocessMode").value = "";
+    document.getElementById("appendScoreAggregation").value = "";
+    document.getElementById("appendEnableTiling").checked = false;
     document.getElementById("detectHeatmapIncludeBackground").checked = true;
     document.getElementById("detectHeatmapZeroBelowThreshold").checked = true;
     state.selectedModelThreshold = null;
@@ -477,7 +529,7 @@ async function resetTrainFormState({ keepLogs = false } = {}) {
   document.getElementById("trainModelName").value = "";
   document.getElementById("trainImageDirInput").value = "";
   document.getElementById("trainCalibrateDirInput").value = "";
-  document.getElementById("trainRuntimeOptions").value = JSON.stringify(defaults, null, 2);
+  syncTrainRuntimeOptionsEditorFromObject(defaults);
   updateTrainDirectorySummary();
   if (!keepLogs) {
     renderTrainTask(null);
@@ -538,6 +590,9 @@ function resetAppendModalState() {
   document.getElementById("appendThreshold").value =
     Number.isFinite(state.selectedModelThreshold) ? String(state.selectedModelThreshold) : "";
   document.getElementById("appendMaxVectors").value = "20";
+  document.getElementById("appendPostprocessMode").value = document.getElementById("detectPostprocessMode").value;
+  document.getElementById("appendScoreAggregation").value = document.getElementById("detectScoreAggregation").value;
+  document.getElementById("appendEnableTiling").checked = document.getElementById("detectEnableTiling").checked;
   document.getElementById("appendHeatmapIncludeBackground").checked = true;
   document.getElementById("appendHeatmapZeroBelowThreshold").checked = true;
   state.appendFile = null;
@@ -627,7 +682,9 @@ async function buildAnnotatedDetectImage(file, result) {
       ctx.strokeStyle = "#ffd24a";
       ctx.lineWidth = boxLineWidth;
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-      const score = Number.isFinite(region.score) ? Number(region.score).toFixed(3) : "-";
+      const score = Number.isFinite(region.score_percent)
+        ? `${Number(region.score_percent).toFixed(1)}%`
+        : (Number.isFinite(region.score) ? Number(region.score).toFixed(3) : "-");
       const label = `A${index + 1}:${score}`;
       ctx.font = `${fontSize}px sans-serif`;
       ctx.textBaseline = "top";
@@ -1802,12 +1859,14 @@ async function loadModelDetail() {
     ? data.versions.find((item) => item.version_id === data.current_version_id)
     : null;
   const threshold = currentVersion?.threshold;
+  const runtimeOptions = currentVersion?.runtime_options || {};
   state.selectedModelThreshold = Number.isFinite(Number(threshold)) ? Number(threshold) : null;
   updateThresholdInputs(state.selectedModelThreshold);
+  syncDetectConfigFromRuntimeOptions(runtimeOptions);
   refreshModelThresholdEditor();
   refreshSamplesEntryState();
-  document.getElementById("detectThreshold").value = threshold ?? "";
-  document.getElementById("appendThreshold").value = threshold ?? "";
+  document.getElementById("detectThreshold").value = "";
+  document.getElementById("appendThreshold").value = "";
 }
 
 async function saveModelThreshold() {
@@ -1833,8 +1892,8 @@ async function saveModelThreshold() {
   state.selectedModelThreshold = threshold;
   updateThresholdInputs(state.selectedModelThreshold);
   refreshModelThresholdEditor();
-  document.getElementById("detectThreshold").value = String(threshold);
-  document.getElementById("appendThreshold").value = String(threshold);
+  document.getElementById("detectThreshold").value = "";
+  document.getElementById("appendThreshold").value = "";
   await loadModelDetail();
   await loadModels();
 }
@@ -1998,11 +2057,12 @@ async function startTrainTask() {
   }
   let runtimeOptions;
   try {
-    runtimeOptions = JSON.parse(document.getElementById("trainRuntimeOptions").value.trim() || "{}");
+    runtimeOptions = getTrainRuntimeOptionsEditorObject();
   } catch (error) {
     alert(`训练参数 JSON 格式错误: ${error.message}`);
     return;
   }
+  runtimeOptions.enable_tiling = document.getElementById("trainEnableTiling").checked;
 
   const button = document.getElementById("startTrainBtn");
   const refreshButton = document.getElementById("refreshTrainTaskBtn");
@@ -2298,27 +2358,31 @@ async function runDetectImage() {
     const heatmapIncludeBackground = document.getElementById("detectHeatmapIncludeBackground").checked;
     const heatmapZeroBelowThreshold = document.getElementById("detectHeatmapZeroBelowThreshold").checked;
     const thresholdRaw = document.getElementById("detectThreshold").value.trim();
+    const postprocessMode = document.getElementById("detectPostprocessMode").value;
+    const scoreAggregation = document.getElementById("detectScoreAggregation").value;
+    const enableTiling = document.getElementById("detectEnableTiling").checked;
     form.append("include_heatmap_base64", includeHeatmap ? "true" : "false");
     form.append("heatmap_include_background", heatmapIncludeBackground ? "true" : "false");
     form.append("heatmap_zero_below_threshold", heatmapZeroBelowThreshold ? "true" : "false");
+    form.append("enable_tiling", enableTiling ? "true" : "false");
     if (thresholdRaw !== "") {
-      form.append("threshold", thresholdRaw);
+      form.append("threshold_percent", thresholdRaw);
+    }
+    if (postprocessMode !== "") {
+      form.append("postprocess_mode", postprocessMode);
+    }
+    if (scoreAggregation !== "") {
+      form.append("score_aggregation", scoreAggregation);
     }
     form.append("image_file", file);
     const result = await api("/api/detect", { method: "POST", body: form });
     const heatmapUrl = includeHeatmap && result.heatmap_base64 ? `data:image/jpeg;base64,${result.heatmap_base64}` : "";
     const annotatedUrl = await buildAnnotatedDetectImage(file, result);
-    const anomalyCount = Array.isArray(result.anomaly_regions) ? result.anomaly_regions.length : 0;
-    const scoreText = Number.isFinite(result.score) ? Number(result.score).toFixed(4) : "-";
-    const extraMessage = result.message
-      ? ` ${result.message}`
-      : (includeHeatmap && !heatmapUrl ? " 未返回热力图" : "");
     document.getElementById("detectHeatmapImage").src = heatmapUrl;
     document.getElementById("detectHeatmapImage").classList.toggle("hidden", !heatmapUrl);
     document.getElementById("detectAnnotatedImage").src = annotatedUrl;
     document.getElementById("detectAnnotatedImage").classList.remove("hidden");
-    document.getElementById("detectResultMeta").textContent =
-      `score=${scoreText} threshold=${result.threshold ?? "-"} 异常区域=${anomalyCount} 结果=${result.is_anomaly ? "异常" : "正常"}${extraMessage}`;
+    document.getElementById("detectResultMeta").textContent = formatDetectSummary(result, includeHeatmap);
   } finally {
     setDetectBusyState(false);
   }
@@ -2408,21 +2472,26 @@ async function autoExtractForAppend() {
     document.getElementById("appendHeatmapZeroBelowThreshold").checked ? "true" : "false",
   );
   const appendThresholdRaw = document.getElementById("appendThreshold").value.trim();
+  const appendPostprocessMode = document.getElementById("appendPostprocessMode").value;
+  const appendScoreAggregation = document.getElementById("appendScoreAggregation").value;
+  const appendEnableTiling = document.getElementById("appendEnableTiling").checked;
+  detectForm.append("enable_tiling", appendEnableTiling ? "true" : "false");
   if (appendThresholdRaw !== "") {
-    detectForm.append("threshold", appendThresholdRaw);
+    detectForm.append("threshold_percent", appendThresholdRaw);
+  }
+  if (appendPostprocessMode !== "") {
+    detectForm.append("postprocess_mode", appendPostprocessMode);
+  }
+  if (appendScoreAggregation !== "") {
+    detectForm.append("score_aggregation", appendScoreAggregation);
   }
   detectForm.append("image_file", file);
   const detectData = await api("/api/detect", { method: "POST", body: detectForm });
   const heatmapUrl = detectData.heatmap_base64
     ? `data:image/jpeg;base64,${detectData.heatmap_base64}`
     : "";
-  const anomalyCount = Array.isArray(detectData.anomaly_regions) ? detectData.anomaly_regions.length : 0;
-  const scoreText = Number.isFinite(detectData.score) ? Number(detectData.score).toFixed(4) : "-";
-  const extraMessage = detectData.message
-    ? ` ${detectData.message}`
-    : (!heatmapUrl ? " 未返回热力图" : "");
   setAppendHeatmapState({
-    message: `score=${scoreText} threshold=${detectData.threshold ?? "-"} 异常区域=${anomalyCount} 结果=${detectData.is_anomaly ? "异常" : "正常"}${extraMessage}`,
+    message: formatDetectSummary(detectData, true),
     imageUrl: heatmapUrl,
     visible: Boolean(heatmapUrl),
   });
@@ -2576,7 +2645,7 @@ document.getElementById("exportModelBtn").onclick = () => {
 document.getElementById("confirmExportBtn").onclick = () => exportCurrentModel(getSelectedExportMode());
 document.getElementById("resetRuntimeOptionsBtn").onclick = async () => {
   const defaults = await loadRuntimeOptionDefaults(true);
-  document.getElementById("trainRuntimeOptions").value = JSON.stringify(defaults, null, 2);
+  syncTrainRuntimeOptionsEditorFromObject(defaults);
 };
 document.getElementById("refreshTrainTaskBtn").onclick = async () => {
   if (!state.activeTrainTaskId) {
@@ -2605,6 +2674,25 @@ document.getElementById("importModelFile").addEventListener("change", async (eve
 });
 document.getElementById("trainImageDirInput").addEventListener("change", updateTrainDirectorySummary);
 document.getElementById("trainCalibrateDirInput").addEventListener("change", updateTrainDirectorySummary);
+document.getElementById("trainEnableTiling").addEventListener("change", (event) => {
+  updateTrainRuntimeOptionsEditor({ enable_tiling: event.target.checked });
+});
+document.getElementById("trainRuntimeOptions").addEventListener("change", () => {
+  try {
+    syncTrainTilingCheckboxFromRuntimeOptions(getTrainRuntimeOptionsEditorObject());
+  } catch (_) {
+    // keep the current checkbox state if JSON is temporarily invalid
+  }
+});
+document.getElementById("detectPostprocessMode").addEventListener("change", (event) => {
+  document.getElementById("appendPostprocessMode").value = event.target.value;
+});
+document.getElementById("detectScoreAggregation").addEventListener("change", (event) => {
+  document.getElementById("appendScoreAggregation").value = event.target.value;
+});
+document.getElementById("detectEnableTiling").addEventListener("change", (event) => {
+  document.getElementById("appendEnableTiling").checked = event.target.checked;
+});
 document.getElementById("trainTaskLog").addEventListener("scroll", (event) => {
   state.trainLogAutoFollow = isElementNearBottom(event.currentTarget);
 });
