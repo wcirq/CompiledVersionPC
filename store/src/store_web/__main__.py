@@ -28,18 +28,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--yolo-weight-path",
         default=None,
-        help="YOLO 列车顶部检测权重路径；不传则使用打包内置权重。",
+        help="Torch YOLO 列车顶部分割权重路径；不传则使用打包内置权重。",
+    )
+    parser.add_argument(
+        "--yolo-bm-weight-path",
+        default=None,
+        help="Sophon BM YOLO 列车顶部分割 bmodel 路径；不传则使用打包内置权重。",
     )
     parser.add_argument(
         "--yolo-conf-threshold",
         type=float,
-        default=0.8,
+        default=0.5,
         help="YOLO 列车顶部检测的置信度阈值。",
-    )
-    parser.add_argument(
-        "--yolo-device",
-        default=None,
-        help="YOLO 推理设备，例如 cpu、cuda:0；不传则按模型默认逻辑选择。",
     )
     return parser
 
@@ -55,8 +55,8 @@ def main() -> None:
         root_dir=args.root_dir,
         autostart_service=False,
         yolo_weight_path=args.yolo_weight_path,
+        yolo_bm_weight_path=args.yolo_bm_weight_path,
         yolo_conf_threshold=args.yolo_conf_threshold,
-        yolo_device=args.yolo_device,
     )
     run_foreground_server(store.manager, host=args.host, port=args.port)
 

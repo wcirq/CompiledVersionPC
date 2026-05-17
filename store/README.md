@@ -150,7 +150,8 @@ pip install -e .[faiss]
 
 - `sophon.sail` 不随 `pip` 自动安装
 - 需要在 BM 环境里单独安装运行时
-- `RuntimeOptions` 中把 `knn_backend="bm"` 或 `backbone_backend="bm"` 即可启用相关逻辑
+- 检测后端会自动按 `bm -> cuda -> cpu` 顺序选择
+- 分割模型、ResNet 特征提取和向量检索都遵循同一套自动选择策略
 
 ## Python 调用
 
@@ -168,8 +169,6 @@ store = TrainRoofAnomalyStore(
 print(store.list_models())
 
 options = RuntimeOptions(
-    device="cuda",
-    knn_backend="faiss",
     crop_size=(640, 640),
     stride=(512, 512),
     threshold_quantile=0.99,
@@ -390,10 +389,6 @@ curl http://127.0.0.1:55555/api/models/model_xxxxx
   可选，模型保存目录；不传则保存到服务当前 `root_dir`
 - `calibrate_dir`
   可选，独立校准集目录
-- `runtime_options.device`
-  运行设备，例如 `cpu`、`cuda`
-- `runtime_options.knn_backend`
-  KNN 后端，例如 `auto`、`faiss`
 - `runtime_options.crop_size`
   训练裁剪尺寸，格式为 `[w, h]`
 - `runtime_options.stride`
@@ -410,8 +405,6 @@ curl -X POST http://127.0.0.1:55555/api/train \
     "save_root_dir": null,
     "calibrate_dir": null,
     "runtime_options": {
-      "device": "cuda",
-      "knn_backend": "faiss",
       "crop_size": [640, 640],
       "stride": [512, 512],
       "threshold_quantile": 0.99

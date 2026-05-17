@@ -136,6 +136,16 @@
                 <option value="mean">Mean</option>
               </select>
             </label>
+            <div id="detectPostprocessModeHelp" class="section-hint">后处理模式说明会显示在这里。</div>
+            <div id="detectScoreAggregationHelp" class="section-hint">图像分数聚合说明会显示在这里。</div>
+            <label class="append-check-field" for="detectUseSegmentation">
+              <input id="detectUseSegmentation" type="checkbox">
+              <span>使用分割模型</span>
+            </label>
+            <label class="append-option-field" for="detectSegmentConfThreshold">
+              <span>分割阈值</span>
+              <input id="detectSegmentConfThreshold" type="number" step="0.01" min="0" max="1" placeholder="留空则使用默认值 0.4">
+            </label>
             <label class="append-check-field" for="detectEnableTiling">
               <input id="detectEnableTiling" type="checkbox">
               <span>启用 Tiling</span>
@@ -152,6 +162,13 @@
               <input id="detectHeatmapZeroBelowThreshold" type="checkbox" checked>
               <span>阈值以下置零</span>
             </label>
+          </div>
+          <div class="panel subtle-panel detect-pipeline-panel">
+            <div class="panel-head">
+              <h3>检测流程图</h3>
+              <div id="detectPipelineMeta" class="append-heatmap-meta">根据当前参数显示各阶段生效位置</div>
+            </div>
+            <div id="detectPipelineFlow" class="detect-pipeline-flow"></div>
           </div>
           <div class="detect-result-grid">
             <div class="detect-result-card">
@@ -322,13 +339,23 @@
           <input id="trainEnableTiling" type="checkbox">
           <span>启用 Tiling</span>
         </label>
+        <div class="append-options-row">
+          <label class="append-check-field" for="trainUseSegmentation">
+            <input id="trainUseSegmentation" type="checkbox">
+            <span>使用分割模型</span>
+          </label>
+          <label class="append-option-field" for="trainSegmentConfThreshold">
+            <span>分割阈值</span>
+            <input id="trainSegmentConfThreshold" type="number" step="0.01" min="0" max="1" placeholder="留空则使用默认值 0.4">
+          </label>
+        </div>
         <div class="panel subtle-panel train-json-panel">
           <div class="panel-head">
             <h3>训练参数</h3>
             <button type="button" id="resetRuntimeOptionsBtn" class="secondary-button">恢复默认参数</button>
           </div>
           <div class="section-hint">支持修改全部 `RuntimeOptions` 字段，使用 JSON 格式。`backbone_bmodel_path` 和 `bm_bmodel_path` 由系统自动使用包内模型，不需要手填。</div>
-          <textarea id="trainRuntimeOptions" rows="18" class="json-textarea" placeholder='{"device":"cuda"}'></textarea>
+          <textarea id="trainRuntimeOptions" rows="18" class="json-textarea" placeholder='{"use_segmentation": false}'></textarea>
         </div>
         <div class="panel subtle-panel train-log-panel">
           <div class="panel-head">
@@ -438,6 +465,16 @@
               <option value="max">Max</option>
               <option value="mean">Mean</option>
             </select>
+          </label>
+          <div id="appendPostprocessModeHelp" class="section-hint">后处理模式说明会显示在这里。</div>
+          <div id="appendScoreAggregationHelp" class="section-hint">图像分数聚合说明会显示在这里。</div>
+          <label class="append-check-field" for="appendUseSegmentation">
+            <input id="appendUseSegmentation" type="checkbox">
+            <span>使用分割模型</span>
+          </label>
+          <label class="append-option-field" for="appendSegmentConfThreshold">
+            <span>分割阈值</span>
+            <input id="appendSegmentConfThreshold" type="number" step="0.01" min="0" max="1" placeholder="留空则使用默认值 0.4">
           </label>
           <label class="append-check-field" for="appendEnableTiling">
             <input id="appendEnableTiling" type="checkbox">

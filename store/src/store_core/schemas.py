@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
@@ -16,10 +16,9 @@ def new_id(prefix: str) -> str:
 
 @dataclass
 class RuntimeOptions:
-    device: str = "cuda"
-    backbone_backend: str = "auto"
-    knn_backend: str = "auto"
     input_size: Tuple[int, int] = (640, 640)
+    use_segmentation: bool = False
+    segment_conf_threshold: Optional[float] = 0.4
     enable_tiling: bool = False
     crop_size: Tuple[int, int] = (640, 640)
     stride: Tuple[int, int] = (512, 512)
@@ -67,11 +66,19 @@ class RuntimeOptions:
     backbone_feat3_output_name: Optional[str] = None
     heatmap_zero_below_threshold: bool = True
 
+    @classmethod
+    def from_dict(cls, payload: Optional[Dict[str, Any]] = None) -> "RuntimeOptions":
+        raw = dict(payload or {})
+        legacy_keys = {"device", "backbone_backend", "knn_backend"}
+        for key in legacy_keys:
+            raw.pop(key, None)
+        allowed = {item.name for item in fields(cls)}
+        filtered = {key: value for key, value in raw.items() if key in allowed}
+        return cls(**filtered)
+
     def to_engine_kwargs(self) -> Dict[str, Any]:
         return {
-            "device": self.device,
             "backbone": "resnet50",
-            "backbone_backend": self.backbone_backend,
             "backbone_bmodel_path": self.backbone_bmodel_path,
             "backbone_device_id": self.backbone_device_id,
             "backbone_graph_name": self.backbone_graph_name,
@@ -83,7 +90,6 @@ class RuntimeOptions:
             "target_embed_dimension": self.target_embed_dimension,
             "local_kernel": self.local_kernel,
             "knn_neighbors": self.knn_neighbors,
-            "knn_backend": self.knn_backend,
             "knn_query_chunk_size": self.knn_query_chunk_size,
             "bm_bmodel_path": self.bm_bmodel_path,
             "bm_device_id": self.bm_device_id,

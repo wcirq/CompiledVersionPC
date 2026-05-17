@@ -1,24 +1,28 @@
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
 import torch
 
+DEFAULT_BACKBONE_BMODEL_PATH = Path(__file__).resolve().parent / "weights" / "backbone_1x3x640x640_bm1684x_f16.bmodel"
+
 
 class BMFeatureBackbone:
     def __init__(
         self,
-        bmodel_path: str,
+        bmodel_path: Optional[str] = None,
         device_id: int = 0,
         graph_name: Optional[str] = None,
         input_name: Optional[str] = None,
         feat2_output_name: Optional[str] = None,
         feat3_output_name: Optional[str] = None,
     ):
-        if not bmodel_path:
-            raise ValueError("bm backbone requires a valid --backbone_bmodel_path.")
+        resolved_bmodel_path = str(bmodel_path or DEFAULT_BACKBONE_BMODEL_PATH)
+        if not Path(resolved_bmodel_path).exists():
+            raise ValueError(f"bm backbone bmodel not found: {resolved_bmodel_path}")
 
         self.backend = "bm"
-        self.bmodel_path = str(bmodel_path)
+        self.bmodel_path = resolved_bmodel_path
         self.device_id = int(device_id)
         self.graph_name = graph_name
         self.input_name = input_name

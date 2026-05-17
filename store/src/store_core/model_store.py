@@ -16,34 +16,32 @@ from .engine import VisionMemoryEngine
 from .engine.utils import resize_long_side
 from .io_utils import maybe_load_image_bgr, read_image_bgr, write_image_bgr, image_to_base64
 from .schemas import ModelInfo, ModelVersionInfo, RuntimeOptions, SampleRecord, new_id, utc_now
-from .segmentation import TrainRoofSegmenter
+from .segmentation import SegmentedRoof, TrainRoofSegmenter
 
 
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 DEFAULT_APPEND_MAX_VECTORS = 20
-
-
 class ModelStoreManager:
     def __init__(
         self,
         root_dir: str,
         yolo_weight_path: Optional[str] = None,
+        yolo_bm_weight_path: Optional[str] = None,
         yolo_conf_threshold: float = 0.25,
-        yolo_device: Optional[str] = None,
     ):
         self.root_dir = Path(root_dir).resolve()
         self.models_dir = self.root_dir / "models"
         self.registry_path = self.root_dir / "registry.json"
         self.tmp_dir = self.root_dir / "tmp"
         self.yolo_weight_path = yolo_weight_path
+        self.yolo_bm_weight_path = yolo_bm_weight_path
         self.yolo_conf_threshold = float(yolo_conf_threshold)
-        self.yolo_device = yolo_device
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.segmenter = TrainRoofSegmenter(
-            weight_path=yolo_weight_path,
+            torch_weight_path=yolo_weight_path,
+            bm_weight_path=yolo_bm_weight_path,
             conf_threshold=yolo_conf_threshold,
-            device=yolo_device,
         )
         self._ensure_registry()
 
@@ -296,6 +294,22 @@ class ModelStoreManager:
         return VisionMemoryEngine(**options.to_engine_kwargs())
 
     @staticmethod
+    def _build_full_image_roof(image_bgr: np.ndarray) -> SegmentedRoof:
+        image_h, image_w = image_bgr.shape[:2]
+        contour = [[0, 0], [image_w - 1, 0], [image_w - 1, image_h - 1], [0, image_h - 1]]
+        mask_full = np.full((image_h, image_w), 255, dtype=np.uint8)
+        return SegmentedRoof(
+            contour=contour,
+            bbox=[0, 0, image_w, image_h],
+            crop_bgr=image_bgr.copy(),
+            masked_full_bgr=image_bgr.copy(),
+            masked_crop_bgr=image_bgr.copy(),
+            mask_full=mask_full,
+            mask_crop=mask_full.copy(),
+            confidence=1.0,
+        )
+
+    @staticmethod
     def _normalize_contours_payload(contour: Optional[Sequence[Any]]) -> List[List[List[int]]]:
         if contour is None:
             return []
@@ -372,6 +386,8 @@ class ModelStoreManager:
         version_dir: Path,
         progress_callback: ProgressCallback = None,
         source_type: str = "train",
+        use_segmentation: bool = False,
+        segment_conf_threshold: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         raw_dir = version_dir / "raw"
         processed_dir = version_dir / "processed"
@@ -385,7 +401,10 @@ class ModelStoreManager:
         for idx, image_path in enumerate(image_paths, start=1):
             try:
                 image_bgr = read_image_bgr(str(image_path))
-                roofs = self.segmenter.segment_image(image_bgr)
+                if use_segmentation:
+                    roofs = self.segmenter.segment_image(image_bgr, conf_threshold=segment_conf_threshold)
+                else:
+                    roofs = [self._build_full_image_roof(image_bgr)]
                 if not roofs:
                     failed_images.append(str(image_path))
                     self._emit(progress_callback, "segment_failed", image=str(image_path), index=idx, total=len(image_paths))
@@ -604,6 +623,8 @@ class ModelStoreManager:
         image_dir: str,
         version_dir: Path,
         progress_callback: ProgressCallback = None,
+        use_segmentation: bool = False,
+        segment_conf_threshold: Optional[float] = None,
     ) -> Tuple[Path, List[str]]:
         out_dir = version_dir / "calibrate_processed"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -613,7 +634,10 @@ class ModelStoreManager:
         for idx, image_path in enumerate(image_paths, start=1):
             try:
                 image_bgr = read_image_bgr(str(image_path))
-                roofs = self.segmenter.segment_image(image_bgr)
+                if use_segmentation:
+                    roofs = self.segmenter.segment_image(image_bgr, conf_threshold=segment_conf_threshold)
+                else:
+                    roofs = [self._build_full_image_roof(image_bgr)]
                 if not roofs:
                     failed_images.append(str(image_path))
                     continue
@@ -686,9 +710,15 @@ class ModelStoreManager:
         version_dir.mkdir(parents=True, exist_ok=True)
 
         self._emit(progress_callback, "prepare_training", model_id=model_id, version_id=version_id)
-        samples, failed_images = self._preprocess_dir(image_dir=image_dir, version_dir=version_dir, progress_callback=progress_callback)
+        samples, failed_images = self._preprocess_dir(
+            image_dir=image_dir,
+            version_dir=version_dir,
+            progress_callback=progress_callback,
+            use_segmentation=bool(runtime_options.use_segmentation),
+            segment_conf_threshold=runtime_options.segment_conf_threshold,
+        )
         if not samples:
-            raise ValueError("No valid train roof samples found after YOLO segmentation.")
+            raise ValueError("No valid samples found during preprocessing.")
 
         engine = self._create_engine(runtime_options)
         self._emit(progress_callback, "build_tiles_start", sample_count=len(samples))
@@ -710,7 +740,13 @@ class ModelStoreManager:
 
         calibrate_source_dir = str(version_dir / "processed")
         if calibrate_dir:
-            calibrate_processed_dir, calibrate_failed = self._preprocess_calibrate_dir(calibrate_dir, version_dir, progress_callback)
+            calibrate_processed_dir, calibrate_failed = self._preprocess_calibrate_dir(
+                calibrate_dir,
+                version_dir,
+                progress_callback,
+                use_segmentation=bool(runtime_options.use_segmentation),
+                segment_conf_threshold=runtime_options.segment_conf_threshold,
+            )
             failed_images.extend(calibrate_failed)
             calibrate_source_dir = str(calibrate_processed_dir)
 
@@ -761,7 +797,7 @@ class ModelStoreManager:
         model_meta = self.get_model(model_id)
         version_id = model_meta["current_version_id"]
         version_meta = self._load_version_meta(model_id, version_id)
-        options = RuntimeOptions(**version_meta["runtime_options"])
+        options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         engine = self._create_engine(options)
         engine.load(str(self._engine_path(model_id, version_id)))
         return engine, model_meta, version_meta
@@ -885,9 +921,11 @@ class ModelStoreManager:
         enable_tiling: Optional[bool] = None,
         postprocess_mode: Optional[str] = None,
         score_aggregation: Optional[str] = None,
+        use_segmentation: Optional[bool] = None,
+        segment_conf_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         engine, model_meta, version_meta = self._load_engine_for_model(model_id)
-        runtime_options = RuntimeOptions(**version_meta["runtime_options"])
+        runtime_options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         default_threshold = float(version_meta.get("threshold") or engine.recommended_threshold or 1.0)
         normalized_threshold = None
         if threshold_percent is not None:
@@ -909,7 +947,15 @@ class ModelStoreManager:
         if active_score_aggregation not in {"mean", "max", "topk_mean"}:
             active_score_aggregation = "topk_mean"
         image_bgr = maybe_load_image_bgr(image_path=image_path, image_bytes=image_bytes, image_bgr=image_bgr)
-        roofs = self.segmenter.segment_image(image_bgr)
+        segmentation_enabled = bool(runtime_options.use_segmentation) if use_segmentation is None else bool(use_segmentation)
+        active_segment_conf_threshold = (
+            runtime_options.segment_conf_threshold if segment_conf_threshold is None else float(segment_conf_threshold)
+        )
+        resolved_segment_conf_threshold = self.segmenter.conf_threshold if active_segment_conf_threshold is None else float(active_segment_conf_threshold)
+        if not segmentation_enabled:
+            roofs = [self._build_full_image_roof(image_bgr)]
+        else:
+            roofs = self.segmenter.segment_image(image_bgr, conf_threshold=resolved_segment_conf_threshold)
         if not roofs:
             return {
                 "model_id": model_id,
@@ -927,6 +973,10 @@ class ModelStoreManager:
                 "anomaly_regions": [],
                 "heatmap_include_background": bool(heatmap_include_background),
                 "heatmap_zero_below_threshold": bool(zero_below_threshold),
+                "segmentation": {
+                    "enabled": segmentation_enabled,
+                    "conf_threshold": resolved_segment_conf_threshold if segmentation_enabled else None,
+                },
                 "score_aggregation": active_score_aggregation,
                 "postprocess_mode": active_postprocess_mode,
                 "tiling": {
@@ -1008,6 +1058,10 @@ class ModelStoreManager:
             "anomaly_regions": anomaly_regions,
             "heatmap_include_background": bool(heatmap_include_background),
             "heatmap_zero_below_threshold": bool(zero_below_threshold),
+            "segmentation": {
+                "enabled": segmentation_enabled,
+                "conf_threshold": resolved_segment_conf_threshold if segmentation_enabled else None,
+            },
             "tiling": {
                 "enabled": active_enable_tiling,
                 "crop_size": list(runtime_options.crop_size),
@@ -1193,7 +1247,7 @@ class ModelStoreManager:
         model_meta = self.get_model(model_id)
         version_id = model_meta["current_version_id"]
         version_meta = self._load_version_meta(model_id, version_id)
-        options = RuntimeOptions(**version_meta["runtime_options"])
+        options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         engine = self._create_engine(options)
         engine.load(str(self._engine_path(model_id, version_id)))
 
@@ -1271,7 +1325,7 @@ class ModelStoreManager:
         model_meta = self.get_model(model_id)
         version_id = model_meta["current_version_id"]
         version_meta = self._load_version_meta(model_id, version_id)
-        options = RuntimeOptions(**version_meta["runtime_options"])
+        options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         samples = self._load_samples(model_id, version_id)
         kept = []
         removed = None
@@ -1309,7 +1363,7 @@ class ModelStoreManager:
         model_meta = self.get_model(model_id)
         version_id = model_meta["current_version_id"]
         version_meta = self._load_version_meta(model_id, version_id)
-        options = RuntimeOptions(**version_meta["runtime_options"])
+        options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         samples = self._load_samples(model_id, version_id)
 
         updated = None
@@ -1358,7 +1412,7 @@ class ModelStoreManager:
         version_id = model_meta["current_version_id"]
         version_dir = self._version_dir(model_id, version_id)
         samples = self._load_samples(model_id, version_id)
-        options = RuntimeOptions(**version_meta["runtime_options"])
+        options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         image_bgr = maybe_load_image_bgr(image_path=image_path, image_bytes=image_bytes)
 
         contours = self._normalize_contours_payload(contour) if contour is not None else [roof.contour for roof in self.segmenter.segment_image(image_bgr)]
@@ -1419,7 +1473,7 @@ class ModelStoreManager:
         model_meta = self.get_model(model_id)
         version_id = model_meta["current_version_id"]
         version_meta = self._load_version_meta(model_id, version_id)
-        options = RuntimeOptions(**version_meta["runtime_options"])
+        options = RuntimeOptions.from_dict(version_meta["runtime_options"])
         tiles_meta = self._load_sample_tiles(model_id, version_id, sample_id)
         enabled_set = set(enabled_tile_ids)
         for tile in tiles_meta.get("tiles", []):

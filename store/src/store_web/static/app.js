@@ -113,27 +113,161 @@ function formatDetectSummary(result, includeHeatmap) {
   const scoreRaw = Number.isFinite(result.score_raw) ? Number(result.score_raw).toFixed(4) : "-";
   const thresholdPercent = Number.isFinite(result.threshold_percent) ? `${Number(result.threshold_percent).toFixed(2)}%` : "-";
   const thresholdRaw = Number.isFinite(result.threshold) ? Number(result.threshold).toFixed(4) : "-";
+  const segmentationLabel = result.segmentation && result.segmentation.enabled === false
+    ? "整图"
+    : `分割(${result.segmentation && Number.isFinite(result.segmentation.conf_threshold) ? Number(result.segmentation.conf_threshold).toFixed(2) : "默认"})`;
   const extraMessage = result.message
     ? ` ${result.message}`
     : (includeHeatmap && !result.heatmap_base64 ? " 未返回热力图" : "");
-  return `异常度=${scorePercent} 阈值=${thresholdPercent} raw=${scoreRaw} raw_threshold=${thresholdRaw} 区域=${anomalyCount} 模式=${result.postprocess_mode || "-"} 聚合=${result.score_aggregation || "-"} 结果=${result.is_anomaly ? "异常" : "正常"}${extraMessage}`;
+  return `异常度=${scorePercent} 阈值=${thresholdPercent} raw=${scoreRaw} raw_threshold=${thresholdRaw} 区域=${anomalyCount} ${segmentationLabel} 模式=${result.postprocess_mode || "-"} 聚合=${result.score_aggregation || "-"} 结果=${result.is_anomaly ? "异常" : "正常"}${extraMessage}`;
+}
+
+const POSTPROCESS_MODE_HELP = {
+  "": "使用模型训练时保存的默认后处理模式。",
+  adaptive: "先用全局阈值找到种子区域，再按每个局部区域强度自适应细化轮廓。通常轮廓更贴边，适合热点强弱不均的异常。",
+  threshold: "直接用全局阈值做二值化并提取轮廓。结果最直接、最稳定，但对局部弱异常不如 adaptive 灵活。",
+};
+
+const SCORE_AGGREGATION_HELP = {
+  "": "使用模型训练时保存的默认图像分数聚合方式。",
+  topk_mean: "取最高的一小部分热力图分数再求平均。兼顾敏感性和稳定性，通常最适合小面积明显异常。",
+  max: "只取全图最高分。最敏感，但也最容易被单点噪声触发误报。",
+  mean: "对全部有效分数求平均。最平滑稳定，但小面积异常更容易被大面积正常区域稀释。",
+};
+
+function updateSelectHelp(selectId, helpId, helpMap) {
+  const select = document.getElementById(selectId);
+  const help = document.getElementById(helpId);
+  if (!select || !help) {
+    return;
+  }
+  help.textContent = helpMap[select.value] || helpMap[""] || "";
+}
+
+function syncDetectOptionHelpTexts() {
+  updateSelectHelp("detectPostprocessMode", "detectPostprocessModeHelp", POSTPROCESS_MODE_HELP);
+  updateSelectHelp("detectScoreAggregation", "detectScoreAggregationHelp", SCORE_AGGREGATION_HELP);
+  updateSelectHelp("appendPostprocessMode", "appendPostprocessModeHelp", POSTPROCESS_MODE_HELP);
+  updateSelectHelp("appendScoreAggregation", "appendScoreAggregationHelp", SCORE_AGGREGATION_HELP);
+}
+
+function renderDetectPipelineFlow() {
+  const root = document.getElementById("detectPipelineFlow");
+  const meta = document.getElementById("detectPipelineMeta");
+  if (!root || !meta) {
+    return;
+  }
+  const useSegmentation = document.getElementById("detectUseSegmentation").checked;
+  const segmentConfThreshold = document.getElementById("detectSegmentConfThreshold").value.trim();
+  const thresholdPercent = document.getElementById("detectThreshold").value.trim();
+  const postprocessMode = document.getElementById("detectPostprocessMode").value || "模型默认";
+  const scoreAggregation = document.getElementById("detectScoreAggregation").value || "模型默认";
+  const enableTiling = document.getElementById("detectEnableTiling").checked;
+  const includeHeatmap = document.getElementById("detectIncludeHeatmap").checked;
+  const heatmapIncludeBackground = document.getElementById("detectHeatmapIncludeBackground").checked;
+  const heatmapZeroBelowThreshold = document.getElementById("detectHeatmapZeroBelowThreshold").checked;
+
+  const steps = [
+    {
+      title: "1. 上传图片",
+      subtitle: "读取原图并准备进入检测流程。",
+      tags: ["输入图片"],
+      active: true,
+      skip: false,
+    },
+    {
+      title: "2. 分割车顶",
+      subtitle: useSegmentation
+        ? "先用分割模型提取车顶区域，再把车顶 ROI 送入异常检测。"
+        : "跳过分割，直接把整张图送入异常检测。",
+      tags: useSegmentation
+        ? [`启用分割`, `阈值=${segmentConfThreshold || "训练默认"}`]
+        : ["整图检测"],
+      active: useSegmentation,
+      skip: !useSegmentation,
+    },
+    {
+      title: "3. 异常检测",
+      subtitle: "对输入区域提取特征、构建热力图并计算整图异常分数。",
+      tags: [
+        `异常阈值=${thresholdPercent ? `${thresholdPercent}%` : "模型默认"}`,
+        `Tiling=${enableTiling ? "开启" : "关闭"}`,
+        `分数聚合=${scoreAggregation}`,
+      ],
+      active: true,
+      skip: false,
+    },
+    {
+      title: "4. 后处理与输出",
+      subtitle: "把热力图转成异常轮廓/框，并决定是否返回热力图及其显示方式。",
+      tags: [
+        `后处理=${postprocessMode}`,
+        `热力图=${includeHeatmap ? "返回" : "不返回"}`,
+        `背景叠加=${heatmapIncludeBackground ? "是" : "否"}`,
+        `阈值以下置零=${heatmapZeroBelowThreshold ? "是" : "否"}`,
+      ],
+      active: true,
+      skip: false,
+    },
+  ];
+
+  root.innerHTML = steps
+    .map((step, index) => `
+      <div class="detect-pipeline-item">
+        <div class="detect-pipeline-step${step.active ? " active" : ""}${step.skip ? " skip" : ""}">
+          <div class="detect-pipeline-step-title">${step.title}</div>
+          <div class="detect-pipeline-step-subtitle">${step.subtitle}</div>
+          <div class="detect-pipeline-tags">
+            ${step.tags.map((tag) => `<span class="detect-pipeline-tag">${tag}</span>`).join("")}
+          </div>
+        </div>
+        ${index < steps.length - 1 ? '<div class="detect-pipeline-arrow" aria-hidden="true">→</div>' : ""}
+      </div>
+    `)
+    .join("");
+
+  meta.textContent = useSegmentation
+    ? "当前流程会先做车顶分割，再进入异常检测。"
+    : "当前流程跳过车顶分割，直接对整图做异常检测。";
+}
+
+function appendSegmentationFormValues(form, enabled, rawThreshold) {
+  form.append("use_segmentation", enabled ? "true" : "false");
+  const text = String(rawThreshold || "").trim();
+  if (text) {
+    form.append("segment_conf_threshold", text);
+  }
 }
 
 function syncDetectConfigFromRuntimeOptions(options = {}) {
   document.getElementById("detectPostprocessMode").value = options.postprocess_mode || "";
   document.getElementById("detectScoreAggregation").value = options.score_aggregation || "";
   document.getElementById("detectEnableTiling").checked = Boolean(options.enable_tiling);
+  document.getElementById("detectUseSegmentation").checked = Boolean(options.use_segmentation);
+  document.getElementById("detectSegmentConfThreshold").value =
+    options.segment_conf_threshold == null ? "" : String(options.segment_conf_threshold);
   document.getElementById("appendPostprocessMode").value = options.postprocess_mode || "";
   document.getElementById("appendScoreAggregation").value = options.score_aggregation || "";
   document.getElementById("appendEnableTiling").checked = Boolean(options.enable_tiling);
+  document.getElementById("appendUseSegmentation").checked = Boolean(options.use_segmentation);
+  document.getElementById("appendSegmentConfThreshold").value =
+    options.segment_conf_threshold == null ? "" : String(options.segment_conf_threshold);
+  syncDetectOptionHelpTexts();
+  renderDetectPipelineFlow();
 }
 
 function syncTrainTilingCheckboxFromRuntimeOptions(options = {}) {
   document.getElementById("trainEnableTiling").checked = Boolean(options.enable_tiling);
+  document.getElementById("trainUseSegmentation").checked = Boolean(options.use_segmentation);
+  document.getElementById("trainSegmentConfThreshold").value =
+    options.segment_conf_threshold == null ? "" : String(options.segment_conf_threshold);
 }
 
 function sanitizeTrainRuntimeOptions(options = {}) {
   const sanitized = { ...(options || {}) };
+  delete sanitized.device;
+  delete sanitized.backbone_backend;
+  delete sanitized.knn_backend;
   delete sanitized.backbone_bmodel_path;
   delete sanitized.bm_bmodel_path;
   return sanitized;
@@ -331,6 +465,7 @@ function refreshDetectEntryState() {
     document.getElementById("detectHeatmapZeroBelowThreshold").checked = true;
     state.selectedModelThreshold = null;
     updateThresholdInputs(null);
+    renderDetectPipelineFlow();
   }
 }
 
@@ -618,6 +753,7 @@ function resetDetectResultState(message = "等待检测") {
   document.getElementById("detectAnnotatedImage").src = "";
   document.getElementById("detectAnnotatedImage").classList.add("hidden");
   document.getElementById("detectResultMeta").textContent = message;
+  renderDetectPipelineFlow();
 }
 
 function setDetectBusyState(busy) {
@@ -2071,6 +2207,9 @@ async function startTrainTask() {
     return;
   }
   runtimeOptions.enable_tiling = document.getElementById("trainEnableTiling").checked;
+  runtimeOptions.use_segmentation = document.getElementById("trainUseSegmentation").checked;
+  const trainSegmentConfThresholdRaw = document.getElementById("trainSegmentConfThreshold").value.trim();
+  runtimeOptions.segment_conf_threshold = trainSegmentConfThresholdRaw === "" ? null : Number(trainSegmentConfThresholdRaw);
   delete runtimeOptions.backbone_bmodel_path;
   delete runtimeOptions.bm_bmodel_path;
 
@@ -2368,6 +2507,8 @@ async function runDetectImage() {
     const heatmapIncludeBackground = document.getElementById("detectHeatmapIncludeBackground").checked;
     const heatmapZeroBelowThreshold = document.getElementById("detectHeatmapZeroBelowThreshold").checked;
     const thresholdRaw = document.getElementById("detectThreshold").value.trim();
+    const useSegmentation = document.getElementById("detectUseSegmentation").checked;
+    const segmentConfThresholdRaw = document.getElementById("detectSegmentConfThreshold").value.trim();
     const postprocessMode = document.getElementById("detectPostprocessMode").value;
     const scoreAggregation = document.getElementById("detectScoreAggregation").value;
     const enableTiling = document.getElementById("detectEnableTiling").checked;
@@ -2375,6 +2516,7 @@ async function runDetectImage() {
     form.append("heatmap_include_background", heatmapIncludeBackground ? "true" : "false");
     form.append("heatmap_zero_below_threshold", heatmapZeroBelowThreshold ? "true" : "false");
     form.append("enable_tiling", enableTiling ? "true" : "false");
+    appendSegmentationFormValues(form, useSegmentation, segmentConfThresholdRaw);
     if (thresholdRaw !== "") {
       form.append("threshold_percent", thresholdRaw);
     }
@@ -2482,10 +2624,13 @@ async function autoExtractForAppend() {
     document.getElementById("appendHeatmapZeroBelowThreshold").checked ? "true" : "false",
   );
   const appendThresholdRaw = document.getElementById("appendThreshold").value.trim();
+  const appendUseSegmentation = document.getElementById("appendUseSegmentation").checked;
+  const appendSegmentConfThresholdRaw = document.getElementById("appendSegmentConfThreshold").value.trim();
   const appendPostprocessMode = document.getElementById("appendPostprocessMode").value;
   const appendScoreAggregation = document.getElementById("appendScoreAggregation").value;
   const appendEnableTiling = document.getElementById("appendEnableTiling").checked;
   detectForm.append("enable_tiling", appendEnableTiling ? "true" : "false");
+  appendSegmentationFormValues(detectForm, appendUseSegmentation, appendSegmentConfThresholdRaw);
   if (appendThresholdRaw !== "") {
     detectForm.append("threshold_percent", appendThresholdRaw);
   }
@@ -2687,6 +2832,13 @@ document.getElementById("trainCalibrateDirInput").addEventListener("change", upd
 document.getElementById("trainEnableTiling").addEventListener("change", (event) => {
   updateTrainRuntimeOptionsEditor({ enable_tiling: event.target.checked });
 });
+document.getElementById("trainUseSegmentation").addEventListener("change", (event) => {
+  updateTrainRuntimeOptionsEditor({ use_segmentation: event.target.checked });
+});
+document.getElementById("trainSegmentConfThreshold").addEventListener("change", (event) => {
+  const rawValue = String(event.target.value || "").trim();
+  updateTrainRuntimeOptionsEditor({ segment_conf_threshold: rawValue === "" ? null : Number(rawValue) });
+});
 document.getElementById("trainRuntimeOptions").addEventListener("change", () => {
   try {
     const options = getTrainRuntimeOptionsEditorObject();
@@ -2698,9 +2850,42 @@ document.getElementById("trainRuntimeOptions").addEventListener("change", () => 
 });
 document.getElementById("detectPostprocessMode").addEventListener("change", (event) => {
   document.getElementById("appendPostprocessMode").value = event.target.value;
+  syncDetectOptionHelpTexts();
+  renderDetectPipelineFlow();
 });
 document.getElementById("detectScoreAggregation").addEventListener("change", (event) => {
   document.getElementById("appendScoreAggregation").value = event.target.value;
+  syncDetectOptionHelpTexts();
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectUseSegmentation").addEventListener("change", (event) => {
+  document.getElementById("appendUseSegmentation").checked = event.target.checked;
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectSegmentConfThreshold").addEventListener("change", (event) => {
+  document.getElementById("appendSegmentConfThreshold").value = event.target.value;
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectThreshold").addEventListener("input", () => {
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectEnableTiling").addEventListener("change", () => {
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectIncludeHeatmap").addEventListener("change", () => {
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectHeatmapIncludeBackground").addEventListener("change", () => {
+  renderDetectPipelineFlow();
+});
+document.getElementById("detectHeatmapZeroBelowThreshold").addEventListener("change", () => {
+  renderDetectPipelineFlow();
+});
+document.getElementById("appendPostprocessMode").addEventListener("change", () => {
+  syncDetectOptionHelpTexts();
+});
+document.getElementById("appendScoreAggregation").addEventListener("change", () => {
+  syncDetectOptionHelpTexts();
 });
 document.getElementById("detectEnableTiling").addEventListener("change", (event) => {
   document.getElementById("appendEnableTiling").checked = event.target.checked;

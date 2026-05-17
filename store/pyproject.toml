@@ -46,6 +46,6 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-store_core = ["assets/weights/*.pt", "engine/weights/*"]
+store_core = ["assets/weights/*.pt", "assets/weights/*.bmodel", "engine/weights/*", "sophon_seg_demo/*.py"]
 store_infer = ["assets/weights/*.pt", "assets/weights/*.bmodel"]
 store_web = ["static/*"]

@@ -5,8 +5,11 @@ src/store_core/io_utils.py
 src/store_core/model_store.py
 src/store_core/package_data.py
 src/store_core/platform.py
+src/store_core/runtime_backend.py
 src/store_core/schemas.py
 src/store_core/segmentation.py
+src/store_core/segmentation_sophon.py
+src/store_core/assets/weights/best_yolo11n_seg_bm1684x_fp16.bmodel
 src/store_core/assets/weights/train_roof_yolo11n_best.pt
 src/store_core/engine/__init__.py
 src/store_core/engine/augment.py
@@ -19,6 +22,10 @@ src/store_core/engine/utils.py
 src/store_core/engine/weights/backbone_1x3x640x640_bm1684x_f16.bmodel
 src/store_core/engine/weights/resnet50-11ad3fa6.pth
 src/store_core/engine/weights/vector_gemm_q1600_n2048_d1024_bm1684x_f16.bmodel
+src/store_core/sophon_seg_demo/__init__.py
+src/store_core/sophon_seg_demo/postprocess_numpy.py
+src/store_core/sophon_seg_demo/utils.py
+src/store_core/sophon_seg_demo/yolov8_bmcv.py
 src/store_infer/__init__.py
 src/store_infer/base.py
 src/store_infer/builtin_models.py

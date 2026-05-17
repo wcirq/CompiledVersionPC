@@ -44,6 +44,8 @@ class DetectRequest(BaseModel):
     enable_tiling: Optional[bool] = None
     postprocess_mode: Optional[str] = None
     score_aggregation: Optional[str] = None
+    use_segmentation: Optional[bool] = None
+    segment_conf_threshold: Optional[float] = None
 
 
 class SampleUpdateRequest(BaseModel):
@@ -81,7 +83,7 @@ class InferenceRequest(BaseModel):
 
 
 def _parse_runtime_options(payload: Dict[str, Any]) -> RuntimeOptions:
-    return RuntimeOptions(**payload)
+    return RuntimeOptions.from_dict(payload)
 
 
 def _safe_relative_upload_path(filename: str, fallback_prefix: str, index: int) -> Path:
@@ -158,10 +160,10 @@ def _train_worker_entry(
     manager = ModelStoreManager(
         root_dir=manager_config["root_dir"],
         yolo_weight_path=manager_config.get("yolo_weight_path"),
+        yolo_bm_weight_path=manager_config.get("yolo_bm_weight_path"),
         yolo_conf_threshold=manager_config.get("yolo_conf_threshold", 0.25),
-        yolo_device=manager_config.get("yolo_device"),
     )
-    runtime_options = RuntimeOptions(**runtime_options_payload)
+    runtime_options = RuntimeOptions.from_dict(runtime_options_payload)
 
     def on_progress(event: Dict[str, Any]) -> None:
         event_queue.put({"type": "progress", "event": event})
@@ -485,8 +487,8 @@ def build_app(manager) -> FastAPI:
                 {
                     "root_dir": str(manager.root_dir),
                     "yolo_weight_path": manager.yolo_weight_path,
+                    "yolo_bm_weight_path": manager.yolo_bm_weight_path,
                     "yolo_conf_threshold": manager.yolo_conf_threshold,
-                    "yolo_device": manager.yolo_device,
                 },
                 model_name,
                 str(train_dir),
@@ -646,6 +648,8 @@ def build_app(manager) -> FastAPI:
         enable_tiling: Optional[bool] = Form(None),
         postprocess_mode: Optional[str] = Form(None),
         score_aggregation: Optional[str] = Form(None),
+        use_segmentation: Optional[bool] = Form(None),
+        segment_conf_threshold: Optional[float] = Form(None),
         image_file: Optional[UploadFile] = File(None),
     ) -> Dict[str, Any]:
         try:
@@ -662,6 +666,8 @@ def build_app(manager) -> FastAPI:
                 enable_tiling=enable_tiling,
                 postprocess_mode=postprocess_mode,
                 score_aggregation=score_aggregation,
+                use_segmentation=use_segmentation,
+                segment_conf_threshold=segment_conf_threshold,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

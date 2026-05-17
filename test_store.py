@@ -41,7 +41,7 @@ def test_store_init():
         root_dir="./store_data",
         autostart_service=True,
         service_port=55555,
-        yolo_conf_threshold=0.8
+        yolo_conf_threshold=0.5
     )
 
     print(store.service_info)
@@ -54,8 +54,6 @@ def test_store_train(store: TrainRoofAnomalyStore):
         print(event)
 
     options = RuntimeOptions(
-        device="cuda",
-        knn_backend="faiss",
         crop_size=(640, 640),
         stride=(512, 512),
         threshold_quantile=0.99,
@@ -75,7 +73,8 @@ def test_store_train(store: TrainRoofAnomalyStore):
 
 def test_store_predict(store: TrainRoofAnomalyStore, model_id=None, image_path=None):
     if image_path is None:
-        image_path = "test_imgs2/test_h7x_DBXS_BAD/test5.jpg"
+        # image_path = "test_imgs2/test_h7x_DBXS_BAD/test5.jpg"
+        image_path = "test5.jpg"
     result = store.detect_image(
         model_id="model_e8ad3cf30cd14a10" if model_id is None else model_id,
         image_path=image_path,
@@ -175,7 +174,7 @@ def test_store_batch_predict(store, model_id):
 
 
 if __name__ == '__main__':
-    model_id = "model_67dd6bdb82a346f6"
+    model_id = "model_f8e53c97ce004b22"
     store = TrainRoofAnomalyStore(
         root_dir="./store_data",
         autostart_service=True,
@@ -183,7 +182,7 @@ if __name__ == '__main__':
         yolo_conf_threshold=0.2,
     )
     # model_id = test_store_train(store)
-    # test_store_predict(store, model_id=model_id)
+    test_store_predict(store, model_id=model_id)
     # test_store_batch_predict(store, model_id=model_id)
 
     store.serve_forever()

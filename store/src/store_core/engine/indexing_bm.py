@@ -1,13 +1,16 @@
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
 import torch
 
+DEFAULT_VECTOR_BMODEL_PATH = Path(__file__).resolve().parent / "weights" / "vector_gemm_q1600_n2048_d1024_bm1684x_f16.bmodel"
+
 
 class BMVectorIndex:
     def __init__(
         self,
-        bmodel_path: str,
+        bmodel_path: Optional[str] = None,
         n_neighbors: int = 1,
         device_id: int = 0,
         query_chunk_size: int = 256,
@@ -17,10 +20,11 @@ class BMVectorIndex:
         database_input_name: Optional[str] = None,
         output_name: Optional[str] = None,
     ):
-        if not bmodel_path:
-            raise ValueError("bm backend requires a valid --bm_bmodel_path.")
+        resolved_bmodel_path = str(bmodel_path or DEFAULT_VECTOR_BMODEL_PATH)
+        if not Path(resolved_bmodel_path).exists():
+            raise ValueError(f"bm vector bmodel not found: {resolved_bmodel_path}")
 
-        self.bmodel_path = str(bmodel_path)
+        self.bmodel_path = resolved_bmodel_path
         self.n_neighbors = int(n_neighbors)
         self.device_id = int(device_id)
         self.query_chunk_size = int(query_chunk_size)

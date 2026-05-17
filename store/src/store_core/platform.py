@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Optional, Sequence
 import numpy as np
 
 from .model_store import ModelStoreManager
-from .package_data import get_default_yolo_weight_path
+from .package_data import get_default_bm_yolo_weight_path, get_default_yolo_weight_path
 from .schemas import RuntimeOptions
 
 
@@ -18,15 +18,15 @@ class TrainRoofAnomalyStore:
         service_host: str = "127.0.0.1",
         service_port: int = 55555,
         yolo_weight_path: Optional[str] = None,
-        yolo_conf_threshold: float = 0.8,
-        yolo_device: Optional[str] = None,
+        yolo_bm_weight_path: Optional[str] = None,
+        yolo_conf_threshold: float = 0.5,
     ):
         self.root_dir = str(Path(root_dir).resolve())
         self.manager = ModelStoreManager(
             root_dir=self.root_dir,
             yolo_weight_path=yolo_weight_path or get_default_yolo_weight_path(),
+            yolo_bm_weight_path=yolo_bm_weight_path or get_default_bm_yolo_weight_path(),
             yolo_conf_threshold=yolo_conf_threshold,
-            yolo_device=yolo_device,
         )
         self.service_info: Optional[Dict[str, Any]] = None
         if autostart_service:
@@ -59,8 +59,8 @@ class TrainRoofAnomalyStore:
             temp_manager = ModelStoreManager(
                 root_dir=save_root_dir,
                 yolo_weight_path=self.manager.yolo_weight_path,
+                yolo_bm_weight_path=self.manager.yolo_bm_weight_path,
                 yolo_conf_threshold=self.manager.yolo_conf_threshold,
-                yolo_device=self.manager.yolo_device,
             )
             return temp_manager.train_model(
                 model_name=model_name,
@@ -93,6 +93,8 @@ class TrainRoofAnomalyStore:
         enable_tiling: Optional[bool] = None,
         postprocess_mode: Optional[str] = None,
         score_aggregation: Optional[str] = None,
+        use_segmentation: Optional[bool] = None,
+        segment_conf_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         return self.manager.detect_image(
             model_id=model_id,
@@ -107,6 +109,8 @@ class TrainRoofAnomalyStore:
             enable_tiling=enable_tiling,
             postprocess_mode=postprocess_mode,
             score_aggregation=score_aggregation,
+            use_segmentation=use_segmentation,
+            segment_conf_threshold=segment_conf_threshold,
         )
 
     def list_models(self) -> Dict[str, Any]:

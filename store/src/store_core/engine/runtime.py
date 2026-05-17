@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from ..runtime_backend import resolve_runtime_backend
 from .augment import (
     adjust_brightness,
     adjust_contrast,
@@ -41,25 +42,15 @@ from .utils import (
     to_bgr,
 )
 
-ENGINE_WEIGHT_DIR = Path(__file__).resolve().parent / "weight"
+ENGINE_WEIGHT_DIR = Path(__file__).resolve().parent / "weights"
 DEFAULT_BACKBONE_BMODEL_PATH = ENGINE_WEIGHT_DIR / "backbone_1x3x640x640_bm1684x_f16.bmodel"
 DEFAULT_VECTOR_BMODEL_PATH = ENGINE_WEIGHT_DIR / "vector_gemm_q1600_n2048_d1024_bm1684x_f16.bmodel"
-
-
-def sophon_sail_available() -> bool:
-    try:
-        import sophon.sail  # noqa: F401
-    except Exception:
-        return False
-    return True
 
 
 class VisionMemoryEngine:
     def __init__(
         self,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
         backbone: str = "resnet50",
-        backbone_backend: str = "auto",
         backbone_bmodel_path: Optional[str] = None,
         backbone_device_id: int = 0,
         backbone_graph_name: Optional[str] = None,
@@ -71,7 +62,6 @@ class VisionMemoryEngine:
         target_embed_dimension: int = 1024,
         local_kernel: int = 3,
         knn_neighbors: int = 1,
-        knn_backend: str = "auto",
         knn_query_chunk_size: int = 8192,
         bm_bmodel_path: Optional[str] = None,
         bm_device_id: int = 0,
@@ -108,10 +98,8 @@ class VisionMemoryEngine:
     ):
         if backbone != "resnet50":
             raise ValueError("Currently only resnet50 is supported.")
-        if backbone_backend not in {"torch", "bm", "auto"}:
-            raise ValueError("backbone_backend must be one of 'auto', 'torch', or 'bm'.")
 
-        sail_ready = sophon_sail_available()
+        runtime = resolve_runtime_backend()
         internal_backbone_bmodel = str(DEFAULT_BACKBONE_BMODEL_PATH) if DEFAULT_BACKBONE_BMODEL_PATH.exists() else None
         internal_vector_bmodel = str(DEFAULT_VECTOR_BMODEL_PATH) if DEFAULT_VECTOR_BMODEL_PATH.exists() else None
         if backbone_bmodel_path is None:
@@ -119,14 +107,26 @@ class VisionMemoryEngine:
         if bm_bmodel_path is None:
             bm_bmodel_path = internal_vector_bmodel
 
-        if backbone_backend == "auto":
-            backbone_backend = "bm" if sail_ready and backbone_bmodel_path else "torch"
-        if knn_backend == "auto" and sail_ready and bm_bmodel_path:
-            knn_backend = "bm"
+        if runtime.backend == "bm" and not backbone_bmodel_path:
+            runtime = resolve_runtime_backend()
+            runtime = runtime if runtime.backend != "bm" else type(runtime)(
+                backend="cpu",
+                torch_device="cpu",
+                feature_backend="torch",
+                knn_backend="sklearn",
+            )
+        if runtime.backend == "bm" and not bm_bmodel_path:
+            runtime = type(runtime)(
+                backend="cpu",
+                torch_device="cpu",
+                feature_backend="torch",
+                knn_backend="sklearn",
+            )
 
-        self.device = device
+        self.runtime_backend = runtime.backend
+        self.device = runtime.torch_device
         self.backbone_name = backbone
-        self.backbone_backend = backbone_backend
+        self.backbone_backend = runtime.feature_backend
         self.backbone_bmodel_path = backbone_bmodel_path
         self.backbone_device_id = int(backbone_device_id)
         self.backbone_graph_name = backbone_graph_name
@@ -138,7 +138,7 @@ class VisionMemoryEngine:
         self.target_embed_dimension = int(target_embed_dimension)
         self.local_kernel = int(local_kernel)
         self.knn_neighbors = int(knn_neighbors)
-        self.knn_backend = knn_backend
+        self.knn_backend = runtime.knn_backend
         self.knn_query_chunk_size = int(knn_query_chunk_size)
         self.bm_bmodel_path = bm_bmodel_path
         self.bm_device_id = int(bm_device_id)
@@ -330,7 +330,6 @@ class VisionMemoryEngine:
             )
             if needs_rebuild:
                 self.feature_extractor = BMFeatureBackbone(
-                    bmodel_path=self.backbone_bmodel_path or "",
                     device_id=self.backbone_device_id,
                     graph_name=self.backbone_graph_name,
                     input_name=self.backbone_input_name,
@@ -933,10 +932,8 @@ class VisionMemoryEngine:
 
     def apply_runtime_overrides(self, **overrides):
         runtime_fields = {
-            "device",
             "input_size",
             "use_amp",
-            "knn_backend",
             "knn_query_chunk_size",
             "bm_bmodel_path",
             "bm_device_id",
@@ -945,7 +942,6 @@ class VisionMemoryEngine:
             "bm_query_input_name",
             "bm_database_input_name",
             "bm_output_name",
-            "backbone_backend",
             "backbone_bmodel_path",
             "backbone_device_id",
             "backbone_graph_name",
@@ -968,9 +964,7 @@ class VisionMemoryEngine:
             data = torch.load(load_path, map_location="cpu")
 
         config = data.get("config", {})
-        self.device = "cpu"
         self.backbone_name = config.get("backbone_name", self.backbone_name)
-        self.backbone_backend = config.get("backbone_backend", self.backbone_backend)
         self.backbone_bmodel_path = config.get("backbone_bmodel_path", self.backbone_bmodel_path)
         self.backbone_device_id = int(config.get("backbone_device_id", self.backbone_device_id))
         self.backbone_graph_name = config.get("backbone_graph_name", self.backbone_graph_name)
@@ -988,7 +982,6 @@ class VisionMemoryEngine:
         self.target_embed_dimension = config.get("target_embed_dimension", self.target_embed_dimension)
         self.local_kernel = config.get("local_kernel", self.local_kernel)
         self.knn_neighbors = config.get("knn_neighbors", self.knn_neighbors)
-        self.knn_backend = config.get("knn_backend", self.knn_backend)
         self.knn_query_chunk_size = config.get("knn_query_chunk_size", self.knn_query_chunk_size)
         self.bm_bmodel_path = config.get("bm_bmodel_path", self.bm_bmodel_path)
         self.bm_device_id = int(config.get("bm_device_id", self.bm_device_id))
