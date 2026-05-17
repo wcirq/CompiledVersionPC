@@ -12,12 +12,10 @@ authors = [
   { name = "OpenAI Codex" }
 ]
 dependencies = [
-  "numpy",
+  "numpy<2",
   "opencv-python",
   "Pillow",
   "scikit-learn",
-  "torch",
-  "torchvision",
   "tqdm",
   "ultralytics",
   "fastapi",
@@ -27,6 +25,14 @@ dependencies = [
 
 [project.optional-dependencies]
 faiss = ["faiss-cpu"]
+cpu = [
+  "torch>=2.2.0",
+  "torchvision==0.17.0"
+]
+cuda = [
+  "torch>=2.2.0",
+  "torchvision>=0.17.0"
+]
 
 [project.scripts]
 store_web = "store_web.__main__:main"
@@ -40,6 +46,6 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-store_core = ["assets/weights/*.pt"]
-store_infer = ["assets/weights/*.pt"]
+store_core = ["assets/weights/*.pt", "engine/weights/*"]
+store_infer = ["assets/weights/*.pt", "assets/weights/*.bmodel"]
 store_web = ["static/*"]

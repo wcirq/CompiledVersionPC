@@ -25,7 +25,8 @@ def test_list_inference_models():
 def test_run_fire_smoke():
     result = run_inference(
         model_name="fire_smoke",
-        image_path="weights/imgs/img_1.png",
+        # image_path="weights/imgs/cf177220111084e5238e303fce537a20.jpg",
+        image_path="cf177220111084e5238e303fce537a20.jpg",
         conf_threshold=0.25,
         include_visualization_base64=True,
     )
@@ -35,8 +36,8 @@ def test_run_fire_smoke():
     image_bytes = base64.b64decode(visualization_base64)
     image_array = np.frombuffer(image_bytes, dtype=np.uint8)
     visualization_image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-    cv2.imshow("visualization_image", _resize_for_display(visualization_image))
-    cv2.waitKey(0)
+    # cv2.imshow("visualization_image", _resize_for_display(visualization_image))
+    # cv2.waitKey(0)
 
 
 if __name__ == "__main__":

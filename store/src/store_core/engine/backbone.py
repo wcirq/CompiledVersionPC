@@ -1,7 +1,11 @@
+from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+
+
+DEFAULT_RESNET50_WEIGHTS = Path(__file__).resolve().parent / "weight" / "resnet50-11ad3fa6.pth"
 
 
 class FeatureBackbone(nn.Module):
@@ -15,12 +19,16 @@ class FeatureBackbone(nn.Module):
                 "Install torchvision or switch to --backbone_backend bm."
             ) from exc
 
-        model = resnet50(weights=None if weights_path else ResNet50_Weights.IMAGENET1K_V2)
-        if weights_path:
-            state_dict = torch.load(weights_path, map_location="cpu")
+        resolved_weights_path = Path(weights_path).resolve() if weights_path else DEFAULT_RESNET50_WEIGHTS
+        if resolved_weights_path.exists():
+            model = resnet50(weights=None)
+            state_dict = torch.load(str(resolved_weights_path), map_location="cpu")
             model.load_state_dict(state_dict)
+        else:
+            model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
 
         self.backend = "torch"
+        self.weights_path = str(resolved_weights_path) if resolved_weights_path.exists() else None
         self.conv1 = model.conv1
         self.bn1 = model.bn1
         self.relu = model.relu

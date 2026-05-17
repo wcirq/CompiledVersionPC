@@ -132,13 +132,21 @@ function syncTrainTilingCheckboxFromRuntimeOptions(options = {}) {
   document.getElementById("trainEnableTiling").checked = Boolean(options.enable_tiling);
 }
 
+function sanitizeTrainRuntimeOptions(options = {}) {
+  const sanitized = { ...(options || {}) };
+  delete sanitized.backbone_bmodel_path;
+  delete sanitized.bm_bmodel_path;
+  return sanitized;
+}
+
 function syncTrainRuntimeOptionsEditorFromObject(options = {}) {
-  document.getElementById("trainRuntimeOptions").value = JSON.stringify(options, null, 2);
-  syncTrainTilingCheckboxFromRuntimeOptions(options);
+  const sanitized = sanitizeTrainRuntimeOptions(options);
+  document.getElementById("trainRuntimeOptions").value = JSON.stringify(sanitized, null, 2);
+  syncTrainTilingCheckboxFromRuntimeOptions(sanitized);
 }
 
 function getTrainRuntimeOptionsEditorObject() {
-  return JSON.parse(document.getElementById("trainRuntimeOptions").value.trim() || "{}");
+  return sanitizeTrainRuntimeOptions(JSON.parse(document.getElementById("trainRuntimeOptions").value.trim() || "{}"));
 }
 
 function updateTrainRuntimeOptionsEditor(patch = {}) {
@@ -2063,6 +2071,8 @@ async function startTrainTask() {
     return;
   }
   runtimeOptions.enable_tiling = document.getElementById("trainEnableTiling").checked;
+  delete runtimeOptions.backbone_bmodel_path;
+  delete runtimeOptions.bm_bmodel_path;
 
   const button = document.getElementById("startTrainBtn");
   const refreshButton = document.getElementById("refreshTrainTaskBtn");
@@ -2679,7 +2689,9 @@ document.getElementById("trainEnableTiling").addEventListener("change", (event) 
 });
 document.getElementById("trainRuntimeOptions").addEventListener("change", () => {
   try {
-    syncTrainTilingCheckboxFromRuntimeOptions(getTrainRuntimeOptionsEditorObject());
+    const options = getTrainRuntimeOptionsEditorObject();
+    syncTrainTilingCheckboxFromRuntimeOptions(options);
+    syncTrainRuntimeOptionsEditorFromObject(options);
   } catch (_) {
     // keep the current checkbox state if JSON is temporarily invalid
   }

@@ -5,12 +5,10 @@ Summary: Train roof anomaly detection library with packaged YOLO segmentation, H
 Author: OpenAI Codex
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
-Requires-Dist: numpy
+Requires-Dist: numpy<2
 Requires-Dist: opencv-python
 Requires-Dist: Pillow
 Requires-Dist: scikit-learn
-Requires-Dist: torch
-Requires-Dist: torchvision
 Requires-Dist: tqdm
 Requires-Dist: ultralytics
 Requires-Dist: fastapi
@@ -18,6 +16,12 @@ Requires-Dist: uvicorn
 Requires-Dist: python-multipart
 Provides-Extra: faiss
 Requires-Dist: faiss-cpu; extra == "faiss"
+Provides-Extra: cpu
+Requires-Dist: torch>=2.2.0; extra == "cpu"
+Requires-Dist: torchvision==0.17.0; extra == "cpu"
+Provides-Extra: cuda
+Requires-Dist: torch>=2.2.0; extra == "cuda"
+Requires-Dist: torchvision>=0.17.0; extra == "cuda"
 
 # 列车顶视觉检测平台
 

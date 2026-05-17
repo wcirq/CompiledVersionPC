@@ -1,14 +1,20 @@
-numpy
+numpy<2
 opencv-python
 Pillow
 scikit-learn
-torch
-torchvision
 tqdm
 ultralytics
 fastapi
 uvicorn
 python-multipart
+
+[cpu]
+torch>=2.2.0
+torchvision==0.17.0
+
+[cuda]
+torch>=2.2.0
+torchvision>=0.17.0
 
 [faiss]
 faiss-cpu

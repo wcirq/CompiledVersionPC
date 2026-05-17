@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cv2
+import logging
 from typing import Any, Dict, Optional
 
 from ultralytics import YOLO
@@ -9,16 +10,23 @@ from store_core.io_utils import image_to_base64, maybe_load_image_bgr
 
 from .base import BaseInferenceRunner
 
+LOGGER = logging.getLogger(__name__)
+
 
 class YoloInferenceRunner(BaseInferenceRunner):
-    def __init__(self, config):
+    def __init__(self, config, backend_config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
+        self.backend_config = dict(backend_config or {})
+        self.runtime_backend = "ultralytics"
         self._model: Optional[YOLO] = None
 
     @property
     def model(self) -> YOLO:
         if self._model is None:
-            self._model = YOLO(self.config.weight_path)
+            weight_path = self.backend_config.get("weight_path") or self.config.weight_path
+            if not weight_path:
+                raise ValueError(f"Ultralytics backend weight_path is not configured for model: {self.config.name}")
+            self._model = YOLO(weight_path)
         return self._model
 
     def predict(
@@ -40,6 +48,18 @@ class YoloInferenceRunner(BaseInferenceRunner):
         imgsz = int(self.config.imgsz if imgsz_value is None else imgsz_value)
         max_det = int(self.config.max_det if max_det_value is None else max_det_value)
         device = self.config.device if device_value is None else device_value
+        weight_path = self.backend_config.get("weight_path") or self.config.weight_path
+        LOGGER.info(
+            "Running inference: model=%s backend=%s device=%s weight=%s conf=%.3f iou=%.3f imgsz=%d max_det=%d",
+            self.config.name,
+            self.runtime_backend,
+            device,
+            weight_path,
+            conf,
+            iou,
+            imgsz,
+            max_det,
+        )
         result = self.model.predict(
             source=image_bgr,
             conf=conf,
@@ -76,7 +96,7 @@ class YoloInferenceRunner(BaseInferenceRunner):
         image_height, image_width = image_bgr.shape[:2]
         payload = {
             "model_name": self.config.name,
-            "backend": self.config.backend,
+            "backend": self.runtime_backend,
             "task_type": self.config.task_type,
             "image_width": int(image_width),
             "image_height": int(image_height),

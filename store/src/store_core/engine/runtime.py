@@ -41,13 +41,25 @@ from .utils import (
     to_bgr,
 )
 
+ENGINE_WEIGHT_DIR = Path(__file__).resolve().parent / "weight"
+DEFAULT_BACKBONE_BMODEL_PATH = ENGINE_WEIGHT_DIR / "backbone_1x3x640x640_bm1684x_f16.bmodel"
+DEFAULT_VECTOR_BMODEL_PATH = ENGINE_WEIGHT_DIR / "vector_gemm_q1600_n2048_d1024_bm1684x_f16.bmodel"
+
+
+def sophon_sail_available() -> bool:
+    try:
+        import sophon.sail  # noqa: F401
+    except Exception:
+        return False
+    return True
+
 
 class VisionMemoryEngine:
     def __init__(
         self,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         backbone: str = "resnet50",
-        backbone_backend: str = "torch",
+        backbone_backend: str = "auto",
         backbone_bmodel_path: Optional[str] = None,
         backbone_device_id: int = 0,
         backbone_graph_name: Optional[str] = None,
@@ -96,8 +108,21 @@ class VisionMemoryEngine:
     ):
         if backbone != "resnet50":
             raise ValueError("Currently only resnet50 is supported.")
-        if backbone_backend not in {"torch", "bm"}:
-            raise ValueError("backbone_backend must be either 'torch' or 'bm'.")
+        if backbone_backend not in {"torch", "bm", "auto"}:
+            raise ValueError("backbone_backend must be one of 'auto', 'torch', or 'bm'.")
+
+        sail_ready = sophon_sail_available()
+        internal_backbone_bmodel = str(DEFAULT_BACKBONE_BMODEL_PATH) if DEFAULT_BACKBONE_BMODEL_PATH.exists() else None
+        internal_vector_bmodel = str(DEFAULT_VECTOR_BMODEL_PATH) if DEFAULT_VECTOR_BMODEL_PATH.exists() else None
+        if backbone_bmodel_path is None:
+            backbone_bmodel_path = internal_backbone_bmodel
+        if bm_bmodel_path is None:
+            bm_bmodel_path = internal_vector_bmodel
+
+        if backbone_backend == "auto":
+            backbone_backend = "bm" if sail_ready and backbone_bmodel_path else "torch"
+        if knn_backend == "auto" and sail_ready and bm_bmodel_path:
+            knn_backend = "bm"
 
         self.device = device
         self.backbone_name = backbone

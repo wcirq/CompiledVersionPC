@@ -18,6 +18,7 @@ store_data/
 export/
 weights/
 suanneng/
+sophon-source/
 
 # Runtime caches
 embedding_cache/
