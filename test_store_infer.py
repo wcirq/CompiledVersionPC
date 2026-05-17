@@ -9,7 +9,7 @@
    列出当前环境中可用的检测模型，确认注册表加载是否正常。
 
 2. `test_run_fire_smoke()`
-   调用名为 `fire_smoke` 的模型对单张图做推理，并把可视化结果从 base64 解码出来。
+   调用名为 `fire_smoke` 的烟火识别模型对单张图做推理，并把可视化结果从 base64 解码出来。
 
 这个脚本适合：
 - 检查 `store_infer` 的模型发现机制是否正常
@@ -49,7 +49,7 @@ def test_list_inference_models():
 
 
 def test_run_fire_smoke():
-    """运行一个 `fire_smoke` 检测示例。
+    """运行一个 `fire_smoke` 烟火识别示例。
 
     这个函数演示了 `run_inference()` 的最基本调用方式：
     - 指定模型名
