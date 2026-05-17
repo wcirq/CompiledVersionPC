@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import zipfile
 from dataclasses import asdict
+import base64
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -13,7 +15,7 @@ import numpy as np
 import torch
 
 from .engine import VisionMemoryEngine
-from .engine.utils import resize_long_side
+from .engine.utils import list_images, resize_long_side
 from .io_utils import maybe_load_image_bgr, read_image_bgr, write_image_bgr, image_to_base64
 from .schemas import ModelInfo, ModelVersionInfo, RuntimeOptions, SampleRecord, new_id, utc_now
 from .segmentation import SegmentedRoof, TrainRoofSegmenter
@@ -310,6 +312,116 @@ class ModelStoreManager:
         )
 
     @staticmethod
+    def _collect_detect_image_paths(
+        image_path: Optional[str] = None,
+        image_paths: Optional[Sequence[str]] = None,
+        image_dir: Optional[str] = None,
+    ) -> List[str]:
+        results: List[str] = []
+        if image_path:
+            results.append(str(Path(image_path).resolve()))
+        if image_paths:
+            results.extend(str(Path(item).resolve()) for item in image_paths if item)
+        if image_dir:
+            results.extend(str(Path(item).resolve()) for item in list_images(image_dir))
+        deduped: List[str] = []
+        seen = set()
+        for item in results:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        if not deduped:
+            raise ValueError("At least one of image_path, image_paths, or image_dir must provide valid images.")
+        return deduped
+
+    @staticmethod
+    def _decode_base64_image(encoded: str) -> np.ndarray:
+        image_bytes = base64.b64decode(encoded)
+        image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+        image_bgr = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            raise ValueError("Failed to decode base64 image.")
+        return image_bgr
+
+    @staticmethod
+    def _draw_detect_boxes(image_bgr: np.ndarray, anomaly_regions: Sequence[Dict[str, Any]]) -> np.ndarray:
+        annotated = image_bgr.copy()
+        base = max(annotated.shape[:2])
+        line_width = max(2, int(round(base / 500)))
+        font_scale = max(0.7, base / 1400.0)
+        font_thickness = max(2, int(round(base / 700)))
+        for index, region in enumerate(anomaly_regions, start=1):
+            box = region.get("box", [])
+            if len(box) != 4:
+                continue
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), line_width)
+            score_raw = region.get("score_raw", region.get("score"))
+            label = f"{index}"
+            if score_raw is not None:
+                label = f"{index} s:{float(score_raw):.2f}"
+            text_y = max(y1 - 8, 20)
+            cv2.putText(
+                annotated,
+                label,
+                (x1, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                font_thickness,
+                cv2.LINE_AA,
+            )
+        return annotated
+
+    @staticmethod
+    def _save_anomaly_boxes_txt(
+        anomaly_regions: Sequence[Dict[str, Any]],
+        image_path_abs: str,
+        output_dir: Path,
+        image_basename: str,
+    ) -> None:
+        if not anomaly_regions:
+            return
+        txt_path = output_dir / f"{image_basename}_result_with_box.txt"
+        with txt_path.open("w", encoding="utf-8") as handle:
+            for index, region in enumerate(anomaly_regions, start=1):
+                box = region.get("box", [])
+                if len(box) != 4:
+                    continue
+                x1, y1, x2, y2 = map(int, box)
+                handle.write(f"{index}\t{image_path_abs}\t{x1}\t{y1}\t{x2 - x1}\t{y2 - y1}\n")
+
+    @staticmethod
+    def _save_anomaly_crops(
+        image_bgr: np.ndarray,
+        anomaly_regions: Sequence[Dict[str, Any]],
+        output_dir: Path,
+        image_basename: str,
+        expand_ratio: float = 0.6,
+    ) -> None:
+        if not anomaly_regions:
+            return
+        crop_dir = output_dir / image_basename
+        crop_dir.mkdir(parents=True, exist_ok=True)
+        image_h, image_w = image_bgr.shape[:2]
+        for index, region in enumerate(anomaly_regions):
+            box = region.get("box", [])
+            if len(box) != 4:
+                continue
+            x1, y1, x2, y2 = map(int, box)
+            w = max(1, x2 - x1)
+            h = max(1, y2 - y1)
+            expand_w = int(round(w * float(expand_ratio)))
+            expand_h = int(round(h * float(expand_ratio)))
+            crop_x1 = max(0, x1 - expand_w)
+            crop_y1 = max(0, y1 - expand_h)
+            crop_x2 = min(image_w, x2 + expand_w)
+            crop_y2 = min(image_h, y2 + expand_h)
+            crop = image_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+            write_image_bgr(str(crop_dir / f"{image_basename}_anomaly_{index}.png"), crop)
+
+    @staticmethod
     def _normalize_contours_payload(contour: Optional[Sequence[Any]]) -> List[List[List[int]]]:
         if contour is None:
             return []
@@ -445,6 +557,7 @@ class ModelStoreManager:
         version_id: str,
         sample: Dict[str, Any],
         options: RuntimeOptions,
+        progress_callback: ProgressCallback = None,
     ) -> List[Dict[str, Any]]:
         processed_bgr = read_image_bgr(sample["processed_image_path"])
         processed_rgb = cv2.cvtColor(processed_bgr, cv2.COLOR_BGR2RGB)
@@ -474,36 +587,66 @@ class ModelStoreManager:
         gap = 18
         tile_col_size = max(1, options.crop_size[1])
         tile_row_size = max(1, options.crop_size[0])
+        sample_id = str(sample.get("sample_id", "unknown"))
+        source_image_name = str(sample.get("source_image_name", "unknown"))
+        self._emit(
+            progress_callback,
+            "tile_extract_start",
+            sample_id=sample_id,
+            image=source_image_name,
+            crop_count=len(crops),
+            detect_batch_size=int(options.detect_batch_size),
+            input_size=list(engine.input_size),
+            crop_size=list(options.crop_size),
+            stride=list(stride),
+        )
 
         for st in range(0, len(crops), max(1, int(options.detect_batch_size))):
             ed = min(st + max(1, int(options.detect_batch_size)), len(crops))
-            batch = engine._images_to_tensor_batch(crops[st:ed])
-            embeddings, _ = engine._extract_embeddings_batch(batch)
-            embed_dim = int(embeddings.shape[2])
-            for local_idx, crop in enumerate(crops[st:ed]):
-                global_idx = st + local_idx
-                tile_id = f"tile_{global_idx:06d}"
-                tile_image_path = images_dir / f"{tile_id}.png"
-                tile_embed_path = embeds_dir / f"{tile_id}.pt"
-                write_image_bgr(str(tile_image_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
-                tile_embeddings = embeddings[local_idx].reshape(-1, embed_dim).cpu().float()
-                torch.save(tile_embeddings, tile_embed_path)
-                y1, y2, x1, x2 = boxes[global_idx]
-                display_x1 = int(x1 + gap * round(x1 / max(tile_col_size, 1)))
-                display_y1 = int(y1 + gap * round(y1 / max(tile_row_size, 1)))
-                display_x2 = display_x1 + int(x2 - x1)
-                display_y2 = display_y1 + int(y2 - y1)
-                tiles.append(
-                    {
-                        "tile_id": tile_id,
-                        "box": [int(x1), int(y1), int(x2), int(y2)],
-                        "sample_bbox": list(sample["bbox"]),
-                        "display_box": [display_x1, display_y1, display_x2, display_y2],
-                        "image_path": str(tile_image_path),
-                        "embedding_path": str(tile_embed_path),
-                        "enabled": True,
-                    }
+            try:
+                self._emit(
+                    progress_callback,
+                    "tile_extract_batch",
+                    sample_id=sample_id,
+                    image=source_image_name,
+                    batch_start=st,
+                    batch_end=ed,
+                    crop_count=len(crops),
                 )
+                batch = engine._images_to_tensor_batch(crops[st:ed])
+                embeddings, _ = engine._extract_embeddings_batch(batch)
+                embed_dim = int(embeddings.shape[2])
+                for local_idx, crop in enumerate(crops[st:ed]):
+                    global_idx = st + local_idx
+                    tile_id = f"tile_{global_idx:06d}"
+                    tile_image_path = images_dir / f"{tile_id}.png"
+                    tile_embed_path = embeds_dir / f"{tile_id}.pt"
+                    write_image_bgr(str(tile_image_path), cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
+                    tile_embeddings = embeddings[local_idx].reshape(-1, embed_dim).cpu().float()
+                    torch.save(tile_embeddings, tile_embed_path)
+                    y1, y2, x1, x2 = boxes[global_idx]
+                    display_x1 = int(x1 + gap * round(x1 / max(tile_col_size, 1)))
+                    display_y1 = int(y1 + gap * round(y1 / max(tile_row_size, 1)))
+                    display_x2 = display_x1 + int(x2 - x1)
+                    display_y2 = display_y1 + int(y2 - y1)
+                    tiles.append(
+                        {
+                            "tile_id": tile_id,
+                            "box": [int(x1), int(y1), int(x2), int(y2)],
+                            "sample_bbox": list(sample["bbox"]),
+                            "display_box": [display_x1, display_y1, display_x2, display_y2],
+                            "image_path": str(tile_image_path),
+                            "embedding_path": str(tile_embed_path),
+                            "enabled": True,
+                        }
+                    )
+            except Exception as exc:
+                raise RuntimeError(
+                    "tile extraction failed "
+                    f"(sample_id={sample_id}, image={source_image_name}, batch={st}:{ed}, "
+                    f"crop_count={len(crops)}, input_size={tuple(engine.input_size)}, "
+                    f"detect_batch_size={int(options.detect_batch_size)})"
+                ) from exc
 
         meta = {
             "sample_id": sample["sample_id"],
@@ -516,6 +659,13 @@ class ModelStoreManager:
         self._write_json(self._sample_tile_meta_path(model_id, version_id, sample["sample_id"]), meta)
         sample["tile_count"] = len(tiles)
         sample["tile_meta_path"] = str(self._sample_tile_meta_path(model_id, version_id, sample["sample_id"]))
+        self._emit(
+            progress_callback,
+            "tile_extract_done",
+            sample_id=sample_id,
+            image=source_image_name,
+            tile_count=len(tiles),
+        )
         return tiles
 
     def _load_sample_tiles(self, model_id: str, version_id: str, sample_id: str) -> Dict[str, Any]:
@@ -541,18 +691,106 @@ class ModelStoreManager:
             raise ValueError(f"No enabled tile embeddings found for sample_id: {sample_id}")
         return torch.cat(chunks, dim=0).float()
 
-    def _collect_enabled_embeddings(self, model_id: str, version_id: str, samples: List[Dict[str, Any]]) -> torch.Tensor:
-        chunks: List[torch.Tensor] = []
+    def _collect_enabled_embeddings(
+        self,
+        model_id: str,
+        version_id: str,
+        samples: List[Dict[str, Any]],
+        max_embeddings: int = 0,
+        random_seed: int = 42,
+        progress_callback: ProgressCallback = None,
+    ) -> Tuple[torch.Tensor, int]:
+        reservoir: Optional[torch.Tensor] = None
+        reservoir_size = max(0, int(max_embeddings))
+        reservoir_count = 0
+        raw_embedding_count = 0
+        rng = np.random.default_rng(random_seed)
+        total_tiles = 0
+        for sample in samples:
+            tiles_meta = self._load_sample_tiles(model_id, version_id, sample["sample_id"])
+            total_tiles += sum(1 for tile in tiles_meta.get("tiles", []) if tile.get("enabled", True))
+        processed_tiles = 0
+        self._emit(
+            progress_callback,
+            "embedding_collect_start",
+            sample_count=len(samples),
+            total_tiles=total_tiles,
+            reservoir_size=reservoir_size,
+        )
+
+        def ensure_2d(emb: torch.Tensor) -> torch.Tensor:
+            emb = emb.cpu().float()
+            if emb.ndim == 1:
+                emb = emb.unsqueeze(0)
+            return emb
+
+        def append_to_reservoir(chunk: torch.Tensor) -> None:
+            nonlocal reservoir, reservoir_count, raw_embedding_count
+            chunk = ensure_2d(chunk)
+            if chunk.numel() == 0:
+                return
+            if reservoir_size <= 0:
+                reservoir = chunk if reservoir is None else torch.cat([reservoir, chunk], dim=0)
+                raw_embedding_count += int(chunk.shape[0])
+                return
+
+            if reservoir is None:
+                reservoir = torch.empty((reservoir_size, int(chunk.shape[1])), dtype=chunk.dtype)
+
+            chunk_rows = int(chunk.shape[0])
+            if reservoir_count < reservoir_size:
+                take = min(reservoir_size - reservoir_count, chunk_rows)
+                reservoir[reservoir_count:reservoir_count + take].copy_(chunk[:take])
+                reservoir_count += take
+                raw_embedding_count += take
+                if take >= chunk_rows:
+                    return
+                chunk = chunk[take:]
+                chunk_rows = int(chunk.shape[0])
+
+            start_seen = raw_embedding_count
+            raw_embedding_count += chunk_rows
+            if chunk_rows <= 0:
+                return
+            highs = np.arange(start_seen + 1, raw_embedding_count + 1, dtype=np.int64)
+            picks = rng.integers(0, highs)
+            selected_rows = np.nonzero(picks < reservoir_size)[0]
+            if selected_rows.size <= 0:
+                return
+            target_indices = torch.from_numpy(picks[selected_rows].astype(np.int64))
+            source_indices = torch.from_numpy(selected_rows.astype(np.int64))
+            reservoir[target_indices] = chunk[source_indices]
+
         for sample in samples:
             tiles_meta = self._load_sample_tiles(model_id, version_id, sample["sample_id"])
             for tile in tiles_meta.get("tiles", []):
                 if not tile.get("enabled", True):
                     continue
                 emb = torch.load(tile["embedding_path"], map_location="cpu")
-                chunks.append(emb.cpu().float())
-        if not chunks:
+                append_to_reservoir(emb)
+                processed_tiles += 1
+                if processed_tiles == 1 or processed_tiles == total_tiles or processed_tiles % 10 == 0:
+                    self._emit(
+                        progress_callback,
+                        "embedding_collect_progress",
+                        processed_tiles=processed_tiles,
+                        total_tiles=total_tiles,
+                        raw_embedding_count=raw_embedding_count,
+                        sampled_embeddings=reservoir_count if reservoir_size > 0 else (int(reservoir.shape[0]) if reservoir is not None else 0),
+                    )
+        if reservoir is None or (reservoir_count <= 0 and reservoir_size > 0) or (reservoir_size <= 0 and reservoir.shape[0] == 0):
             raise ValueError("No enabled tile embeddings found.")
-        return torch.cat(chunks, dim=0).float()
+        if reservoir_size > 0:
+            reservoir = reservoir[:reservoir_count].contiguous()
+        self._emit(
+            progress_callback,
+            "embedding_collect_done",
+            processed_tiles=processed_tiles,
+            total_tiles=total_tiles,
+            raw_embedding_count=raw_embedding_count,
+            sampled_embeddings=reservoir_count if reservoir_size > 0 else int(reservoir.shape[0]),
+        )
+        return reservoir.float(), raw_embedding_count
 
     def _rebuild_engine_from_tiles(
         self,
@@ -562,6 +800,7 @@ class ModelStoreManager:
         preserve_threshold: bool = True,
         calibrate: bool = False,
         compress_memory: bool = True,
+        progress_callback: ProgressCallback = None,
     ) -> Dict[str, Any]:
         engine_path = self._engine_path(model_id, version_id)
         engine = self._create_engine(options)
@@ -580,8 +819,14 @@ class ModelStoreManager:
             }
 
         samples = self._load_samples(model_id, version_id)
-        embeddings = self._collect_enabled_embeddings(model_id, version_id, samples)
-        raw_embedding_count = int(embeddings.shape[0])
+        embeddings, raw_embedding_count = self._collect_enabled_embeddings(
+            model_id,
+            version_id,
+            samples,
+            max_embeddings=int(options.max_embeddings),
+            random_seed=int(options.random_seed),
+            progress_callback=progress_callback,
+        )
         engine.memory_bank = engine._compress_memory(embeddings, sampling_ratio=options.memory_ratio) if compress_memory and options.memory_ratio < 1.0 else embeddings
         engine._build_index()
 
@@ -710,24 +955,56 @@ class ModelStoreManager:
         version_dir.mkdir(parents=True, exist_ok=True)
 
         self._emit(progress_callback, "prepare_training", model_id=model_id, version_id=version_id)
-        samples, failed_images = self._preprocess_dir(
-            image_dir=image_dir,
-            version_dir=version_dir,
-            progress_callback=progress_callback,
-            use_segmentation=bool(runtime_options.use_segmentation),
-            segment_conf_threshold=runtime_options.segment_conf_threshold,
-        )
+        try:
+            samples, failed_images = self._preprocess_dir(
+                image_dir=image_dir,
+                version_dir=version_dir,
+                progress_callback=progress_callback,
+                use_segmentation=bool(runtime_options.use_segmentation),
+                segment_conf_threshold=runtime_options.segment_conf_threshold,
+            )
+        except Exception as exc:
+            self._emit(progress_callback, "train_stage_error", stage_name="preprocess", error=str(exc))
+            raise RuntimeError(f"training preprocess failed: {exc}") from exc
         if not samples:
             raise ValueError("No valid samples found during preprocessing.")
 
-        engine = self._create_engine(runtime_options)
+        try:
+            engine = self._create_engine(runtime_options)
+        except Exception as exc:
+            self._emit(progress_callback, "train_stage_error", stage_name="create_engine", error=str(exc))
+            raise RuntimeError(f"engine creation failed: {exc}") from exc
+
         self._emit(progress_callback, "build_tiles_start", sample_count=len(samples))
-        for sample in samples:
-            self._extract_sample_tiles(engine, model_id, version_id, sample, runtime_options)
+        try:
+            for sample_index, sample in enumerate(samples, start=1):
+                self._emit(
+                    progress_callback,
+                    "tile_sample_start",
+                    sample_index=sample_index,
+                    sample_total=len(samples),
+                    sample_id=sample.get("sample_id"),
+                    image=sample.get("source_image_name"),
+                )
+                self._extract_sample_tiles(engine, model_id, version_id, sample, runtime_options, progress_callback=progress_callback)
+        except Exception as exc:
+            self._emit(progress_callback, "train_stage_error", stage_name="build_tiles", error=str(exc))
+            raise RuntimeError(f"tile building failed: {exc}") from exc
         self._save_samples(model_id, version_id, samples)
         total_tile_count = int(sum(int(sample.get("tile_count", 0)) for sample in samples))
         self._emit(progress_callback, "build_tiles_done", sample_count=len(samples), tile_count=total_tile_count)
-        rebuild = self._rebuild_engine_from_tiles(model_id, version_id, runtime_options, preserve_threshold=False, calibrate=False)
+        try:
+            rebuild = self._rebuild_engine_from_tiles(
+                model_id,
+                version_id,
+                runtime_options,
+                preserve_threshold=False,
+                calibrate=False,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            self._emit(progress_callback, "train_stage_error", stage_name="build_memory", error=str(exc))
+            raise RuntimeError(f"memory rebuild failed: {exc}") from exc
         engine = rebuild["engine"]
         self._emit(
             progress_callback,
@@ -740,34 +1017,46 @@ class ModelStoreManager:
 
         calibrate_source_dir = str(version_dir / "processed")
         if calibrate_dir:
-            calibrate_processed_dir, calibrate_failed = self._preprocess_calibrate_dir(
-                calibrate_dir,
-                version_dir,
-                progress_callback,
-                use_segmentation=bool(runtime_options.use_segmentation),
-                segment_conf_threshold=runtime_options.segment_conf_threshold,
-            )
+            try:
+                calibrate_processed_dir, calibrate_failed = self._preprocess_calibrate_dir(
+                    calibrate_dir,
+                    version_dir,
+                    progress_callback,
+                    use_segmentation=bool(runtime_options.use_segmentation),
+                    segment_conf_threshold=runtime_options.segment_conf_threshold,
+                )
+            except Exception as exc:
+                self._emit(progress_callback, "train_stage_error", stage_name="preprocess_calibrate", error=str(exc))
+                raise RuntimeError(f"calibration preprocessing failed: {exc}") from exc
             failed_images.extend(calibrate_failed)
             calibrate_source_dir = str(calibrate_processed_dir)
 
         self._emit(progress_callback, "calibrate_start", calibrate_dir=calibrate_source_dir)
-        threshold = engine.calibrate_threshold(
-            image_dir=calibrate_source_dir,
-            enable_tiling=bool(runtime_options.enable_tiling),
-            crop_size=runtime_options.crop_size,
-            stride=runtime_options.stride,
-            quantile=runtime_options.threshold_quantile,
-            heatmap_std_scale=runtime_options.heatmap_std_scale,
-            heatmap_quantile=runtime_options.heatmap_quantile,
-            max_heatmap_samples=runtime_options.max_heatmap_samples,
-            detect_batch_size=runtime_options.detect_batch_size,
-            infer_long_side=runtime_options.infer_long_side,
-            fast_calibrate=runtime_options.fast_calibrate,
-        )
+        try:
+            threshold = engine.calibrate_threshold(
+                image_dir=calibrate_source_dir,
+                enable_tiling=bool(runtime_options.enable_tiling),
+                crop_size=runtime_options.crop_size,
+                stride=runtime_options.stride,
+                quantile=runtime_options.threshold_quantile,
+                heatmap_std_scale=runtime_options.heatmap_std_scale,
+                heatmap_quantile=runtime_options.heatmap_quantile,
+                max_heatmap_samples=runtime_options.max_heatmap_samples,
+                detect_batch_size=runtime_options.detect_batch_size,
+                infer_long_side=runtime_options.infer_long_side,
+                fast_calibrate=runtime_options.fast_calibrate,
+            )
+        except Exception as exc:
+            self._emit(progress_callback, "train_stage_error", stage_name="calibrate", error=str(exc))
+            raise RuntimeError(f"threshold calibration failed: {exc}") from exc
         self._emit(progress_callback, "calibrate_done", threshold=threshold)
 
         engine_path = self._engine_path(model_id, version_id)
-        engine.save(str(engine_path))
+        try:
+            engine.save(str(engine_path))
+        except Exception as exc:
+            self._emit(progress_callback, "train_stage_error", stage_name="save_engine", error=str(exc))
+            raise RuntimeError(f"engine save failed: {exc}") from exc
         version_meta = self._save_version_meta(
             model_id=model_id,
             version_id=version_id,
@@ -833,6 +1122,28 @@ class ModelStoreManager:
         local_threshold = vmin + (float(otsu_threshold) / 255.0) * (vmax - vmin)
         return float(max(global_threshold * float(min_factor), min(float(global_threshold), local_threshold)))
 
+    @staticmethod
+    def _prepare_region_seed_binary(
+        heatmap: np.ndarray,
+        threshold: float,
+        min_anomaly_area: int = 0,
+        merge_distance_pixels: int = 0,
+    ) -> np.ndarray:
+        binary = (heatmap >= threshold).astype(np.uint8) * 255
+        if int(min_anomaly_area) > 0:
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            filtered = np.zeros_like(binary)
+            for contour in contours:
+                if float(cv2.contourArea(contour)) >= float(min_anomaly_area):
+                    cv2.drawContours(filtered, [contour], -1, 255, thickness=cv2.FILLED)
+            binary = filtered
+        merge_distance = max(0, int(merge_distance_pixels))
+        if merge_distance > 0 and np.any(binary):
+            kernel_size = (merge_distance * 2) + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        return binary
+
     @classmethod
     def _heatmap_to_regions(
         cls,
@@ -842,15 +1153,24 @@ class ModelStoreManager:
         postprocess_mode: str = "adaptive",
         adaptive_region_min_factor: float = 0.75,
         adaptive_bbox_expand_ratio: float = 0.12,
+        min_anomaly_area: int = 0,
+        merge_distance_pixels: int = 0,
         score_normalizer = None,
     ) -> List[Dict[str, Any]]:
-        seed_binary = (heatmap >= threshold).astype(np.uint8) * 255
+        seed_binary = cls._prepare_region_seed_binary(
+            heatmap=heatmap,
+            threshold=threshold,
+            min_anomaly_area=min_anomaly_area,
+            merge_distance_pixels=merge_distance_pixels,
+        )
         contours, _ = cv2.findContours(seed_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         regions: List[Dict[str, Any]] = []
         offset_x, offset_y = offset_xy
         heatmap_h, heatmap_w = heatmap.shape[:2]
         for seed_contour in contours:
             if seed_contour.shape[0] < 3:
+                continue
+            if float(cv2.contourArea(seed_contour)) < float(max(0, int(min_anomaly_area))):
                 continue
             contour = seed_contour.reshape(-1, 2)
             x, y, w, h = cv2.boundingRect(contour.astype(np.int32))
@@ -921,6 +1241,8 @@ class ModelStoreManager:
         enable_tiling: Optional[bool] = None,
         postprocess_mode: Optional[str] = None,
         score_aggregation: Optional[str] = None,
+        min_anomaly_area: Optional[int] = None,
+        merge_distance_pixels: Optional[int] = None,
         use_segmentation: Optional[bool] = None,
         segment_conf_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -942,6 +1264,8 @@ class ModelStoreManager:
         active_enable_tiling = bool(runtime_options.enable_tiling) if enable_tiling is None else bool(enable_tiling)
         active_postprocess_mode = (postprocess_mode or runtime_options.postprocess_mode or "adaptive").strip().lower()
         active_score_aggregation = (score_aggregation or runtime_options.score_aggregation or "topk_mean").strip().lower()
+        active_min_anomaly_area = max(0, int(runtime_options.min_anomaly_area if min_anomaly_area is None else min_anomaly_area))
+        active_merge_distance_pixels = max(0, int(runtime_options.merge_distance_pixels if merge_distance_pixels is None else merge_distance_pixels))
         if active_postprocess_mode not in {"adaptive", "threshold"}:
             active_postprocess_mode = "adaptive"
         if active_score_aggregation not in {"mean", "max", "topk_mean"}:
@@ -979,6 +1303,8 @@ class ModelStoreManager:
                 },
                 "score_aggregation": active_score_aggregation,
                 "postprocess_mode": active_postprocess_mode,
+                "min_anomaly_area": active_min_anomaly_area,
+                "merge_distance_pixels": active_merge_distance_pixels,
                 "tiling": {
                     "enabled": active_enable_tiling,
                     "crop_size": list(runtime_options.crop_size),
@@ -1024,6 +1350,8 @@ class ModelStoreManager:
                     postprocess_mode=active_postprocess_mode,
                     adaptive_region_min_factor=float(runtime_options.adaptive_region_min_factor),
                     adaptive_bbox_expand_ratio=float(runtime_options.adaptive_bbox_expand_ratio),
+                    min_anomaly_area=active_min_anomaly_area,
+                    merge_distance_pixels=active_merge_distance_pixels,
                     score_normalizer=lambda value, eng=engine, threshold_value=default_threshold: eng.normalize_heatmap_score(value, threshold_value),
                 )
             )
@@ -1054,6 +1382,8 @@ class ModelStoreManager:
             "has_region_above_threshold": has_region_above_threshold,
             "score_aggregation": active_score_aggregation,
             "postprocess_mode": active_postprocess_mode,
+            "min_anomaly_area": active_min_anomaly_area,
+            "merge_distance_pixels": active_merge_distance_pixels,
             "roof_contours": roof_contours,
             "anomaly_regions": anomaly_regions,
             "heatmap_include_background": bool(heatmap_include_background),
@@ -1074,6 +1404,8 @@ class ModelStoreManager:
                 "score_topk_ratio": float(runtime_options.score_topk_ratio),
                 "adaptive_region_min_factor": float(runtime_options.adaptive_region_min_factor),
                 "adaptive_bbox_expand_ratio": float(runtime_options.adaptive_bbox_expand_ratio),
+                "min_anomaly_area": active_min_anomaly_area,
+                "merge_distance_pixels": active_merge_distance_pixels,
             },
             "normalization": {
                 "score_min": engine.score_min,
@@ -1101,6 +1433,151 @@ class ModelStoreManager:
             heatmap_image = cv2.addWeighted(image_bgr, 0.55, heat_color, 0.45, 0) if heatmap_include_background else heat_color
             response["heatmap_base64"] = image_to_base64(heatmap_image, ".jpg")
         return response
+
+    def detect_and_save_results(
+        self,
+        model_id: str,
+        output_dir: str,
+        image_path: Optional[str] = None,
+        image_paths: Optional[Sequence[str]] = None,
+        image_dir: Optional[str] = None,
+        threshold: Optional[float] = None,
+        threshold_percent: Optional[float] = None,
+        use_segmentation: Optional[bool] = None,
+        segment_conf_threshold: Optional[float] = None,
+        enable_tiling: Optional[bool] = None,
+        postprocess_mode: Optional[str] = None,
+        score_aggregation: Optional[str] = None,
+        min_anomaly_area: Optional[int] = None,
+        merge_distance_pixels: Optional[int] = None,
+        heatmap_zero_below_threshold: Optional[bool] = None,
+        crop_expand_ratio: float = 0.6,
+        save_process_files: bool = True,
+        progress_callback: ProgressCallback = None,
+    ) -> Dict[str, Any]:
+        target_dir = Path(output_dir).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        resolved_image_paths = self._collect_detect_image_paths(
+            image_path=image_path,
+            image_paths=image_paths,
+            image_dir=image_dir,
+        )
+        total = len(resolved_image_paths)
+        self._emit(
+            progress_callback,
+            "detect_save_prepare",
+            model_id=model_id,
+            output_dir=str(target_dir),
+            total=total,
+        )
+
+        results: List[Dict[str, Any]] = []
+        for index, current_image_path in enumerate(resolved_image_paths, start=1):
+            self._emit(
+                progress_callback,
+                "detect_save_processing",
+                model_id=model_id,
+                output_dir=str(target_dir),
+                index=index,
+                total=total,
+                image_path=str(Path(current_image_path).resolve()),
+            )
+            image_bgr = read_image_bgr(current_image_path)
+            result = self.detect_image(
+                model_id=model_id,
+                image_path=current_image_path,
+                include_heatmap_base64=bool(save_process_files),
+                threshold=threshold,
+                threshold_percent=threshold_percent,
+                heatmap_include_background=False,
+                heatmap_zero_below_threshold=heatmap_zero_below_threshold,
+                enable_tiling=enable_tiling,
+                postprocess_mode=postprocess_mode,
+                score_aggregation=score_aggregation,
+                min_anomaly_area=min_anomaly_area,
+                merge_distance_pixels=merge_distance_pixels,
+                use_segmentation=use_segmentation,
+                segment_conf_threshold=segment_conf_threshold,
+            )
+
+            image_basename = Path(current_image_path).stem
+            anomaly_regions = result.get("anomaly_regions", [])
+            annotated_image = self._draw_detect_boxes(image_bgr, anomaly_regions)
+            annotated_path = target_dir / f"{image_basename}_result_with_box.jpg"
+            write_image_bgr(str(annotated_path), annotated_image)
+            self._save_anomaly_boxes_txt(anomaly_regions, str(Path(current_image_path).resolve()), target_dir, image_basename)
+            self._save_anomaly_crops(image_bgr, anomaly_regions, target_dir, image_basename, expand_ratio=crop_expand_ratio)
+
+            saved_files = [str(annotated_path)]
+            txt_path = target_dir / f"{image_basename}_result_with_box.txt"
+            if txt_path.exists():
+                saved_files.append(str(txt_path))
+            crop_dir = target_dir / image_basename
+            if crop_dir.exists():
+                saved_files.append(str(crop_dir))
+
+            if save_process_files and result.get("heatmap_base64"):
+                heatmap_bgr = self._decode_base64_image(result["heatmap_base64"])
+                heatmap_path = target_dir / f"{image_basename}_result_anomaly_map.png"
+                write_image_bgr(str(heatmap_path), heatmap_bgr)
+                saved_files.append(str(heatmap_path))
+
+                overlay_result = self.detect_image(
+                    model_id=model_id,
+                    image_path=current_image_path,
+                    include_heatmap_base64=True,
+                    threshold=threshold,
+                    threshold_percent=threshold_percent,
+                    heatmap_include_background=True,
+                    heatmap_zero_below_threshold=heatmap_zero_below_threshold,
+                    enable_tiling=enable_tiling,
+                    postprocess_mode=postprocess_mode,
+                    score_aggregation=score_aggregation,
+                    min_anomaly_area=min_anomaly_area,
+                    merge_distance_pixels=merge_distance_pixels,
+                    use_segmentation=use_segmentation,
+                    segment_conf_threshold=segment_conf_threshold,
+                )
+                overlay_bgr = self._decode_base64_image(overlay_result["heatmap_base64"])
+                overlay_path = target_dir / f"{image_basename}_result_overlay.png"
+                write_image_bgr(str(overlay_path), overlay_bgr)
+                saved_files.append(str(overlay_path))
+
+            results.append(
+                {
+                    "index": index,
+                    "image_path": str(Path(current_image_path).resolve()),
+                    "image_basename": image_basename,
+                    "result": result,
+                    "saved_files": saved_files,
+                }
+            )
+            self._emit(
+                progress_callback,
+                "detect_save_item_done",
+                model_id=model_id,
+                output_dir=str(target_dir),
+                index=index,
+                total=total,
+                image_path=str(Path(current_image_path).resolve()),
+                saved_files=saved_files,
+                is_anomaly=bool(result.get("is_anomaly")),
+            )
+
+        summary = {
+            "model_id": model_id,
+            "output_dir": str(target_dir),
+            "count": len(results),
+            "items": results,
+        }
+        self._emit(
+            progress_callback,
+            "detect_save_done",
+            model_id=model_id,
+            output_dir=str(target_dir),
+            count=len(results),
+        )
+        return summary
 
     def list_samples(self, model_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
         model_meta = self.get_model(model_id)

@@ -41,6 +41,8 @@ class RuntimeOptions:
     score_topk_ratio: float = 0.01
     adaptive_region_min_factor: float = 0.75
     adaptive_bbox_expand_ratio: float = 0.12
+    min_anomaly_area: int = 0
+    merge_distance_pixels: int = 0
     max_embeddings: int = 1_200_000
     train_crop_scale_range: Tuple[float, float] = (0.7, 1.3)
     train_crop_round_multiple: int = 8

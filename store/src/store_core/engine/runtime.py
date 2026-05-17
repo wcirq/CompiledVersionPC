@@ -147,7 +147,7 @@ class VisionMemoryEngine:
         self.bm_query_input_name = bm_query_input_name
         self.bm_database_input_name = bm_database_input_name
         self.bm_output_name = bm_output_name
-        self.use_amp = bool(use_amp and torch.cuda.is_available() and "cuda" in str(device))
+        self.use_amp = bool(use_amp and torch.cuda.is_available() and "cuda" in str(self.device))
 
         self.enable_train_augment = bool(enable_train_augment)
         self.aug_keep_original_count = int(aug_keep_original_count)

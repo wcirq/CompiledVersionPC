@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import shutil
 import threading
+import traceback
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -22,6 +23,8 @@ from store_infer import get_inference_registry
 
 _EXPORT_TASKS: Dict[str, Dict[str, Any]] = {}
 _EXPORT_TASKS_LOCK = threading.Lock()
+_DETECT_SAVE_TASKS: Dict[str, Dict[str, Any]] = {}
+_DETECT_SAVE_TASKS_LOCK = threading.Lock()
 _TRAIN_TASKS: Dict[str, Dict[str, Any]] = {}
 _TRAIN_TASKS_LOCK = threading.Lock()
 
@@ -44,8 +47,30 @@ class DetectRequest(BaseModel):
     enable_tiling: Optional[bool] = None
     postprocess_mode: Optional[str] = None
     score_aggregation: Optional[str] = None
+    min_anomaly_area: Optional[int] = None
+    merge_distance_pixels: Optional[int] = None
     use_segmentation: Optional[bool] = None
     segment_conf_threshold: Optional[float] = None
+
+
+class DetectSaveRequest(BaseModel):
+    model_id: str
+    output_dir: str
+    image_path: Optional[str] = None
+    image_paths: List[str] = Field(default_factory=list)
+    image_dir: Optional[str] = None
+    threshold: Optional[float] = None
+    threshold_percent: Optional[float] = None
+    use_segmentation: Optional[bool] = None
+    segment_conf_threshold: Optional[float] = None
+    enable_tiling: Optional[bool] = None
+    postprocess_mode: Optional[str] = None
+    score_aggregation: Optional[str] = None
+    min_anomaly_area: Optional[int] = None
+    merge_distance_pixels: Optional[int] = None
+    heatmap_zero_below_threshold: Optional[bool] = None
+    crop_expand_ratio: float = 0.6
+    save_process_files: bool = True
 
 
 class SampleUpdateRequest(BaseModel):
@@ -107,6 +132,12 @@ def _estimate_train_progress(stage: str, event: Dict[str, Any], current_progress
     }
     if stage in stage_progress:
         return stage_progress[stage]
+    if stage == "embedding_collect_progress":
+        total = max(1, int(event.get("total_tiles", 1)))
+        processed = max(0, min(total, int(event.get("processed_tiles", 0))))
+        return max(current_progress, 52 + int(processed * 14 / total))
+    if stage == "embedding_collect_done":
+        return max(current_progress, 66)
     if stage in {"preprocess_ok", "preprocess_failed"}:
         total = max(1, int(event.get("total", 1)))
         index = max(0, min(total, int(event.get("index", 0))))
@@ -178,7 +209,7 @@ def _train_worker_entry(
         )
         event_queue.put({"type": "completed", "result": result})
     except Exception as exc:
-        event_queue.put({"type": "error", "error": str(exc)})
+        event_queue.put({"type": "error", "error": str(exc), "traceback": traceback.format_exc()})
 
 
 def build_app(manager) -> FastAPI:
@@ -557,6 +588,7 @@ def build_app(manager) -> FastAPI:
                             break
                         elif message.get("type") == "error":
                             detail = message.get("error", "训练失败")
+                            trace_text = message.get("traceback")
                             with _TRAIN_TASKS_LOCK:
                                 live_task = _TRAIN_TASKS.get(task_id)
                                 if live_task is not None:
@@ -564,6 +596,8 @@ def build_app(manager) -> FastAPI:
                                     live_task["error"] = detail
                                     live_task["message"] = f"训练失败: {detail}"
                                     live_task["logs"].append(json.dumps({"stage": "error", "detail": detail}, ensure_ascii=False))
+                                    if trace_text:
+                                        live_task["logs"].append(trace_text)
                             shutil.rmtree(upload_root, ignore_errors=True)
                             remove_model_artifacts(task.get("model_id") if task else None)
                             break
@@ -648,6 +682,8 @@ def build_app(manager) -> FastAPI:
         enable_tiling: Optional[bool] = Form(None),
         postprocess_mode: Optional[str] = Form(None),
         score_aggregation: Optional[str] = Form(None),
+        min_anomaly_area: Optional[int] = Form(None),
+        merge_distance_pixels: Optional[int] = Form(None),
         use_segmentation: Optional[bool] = Form(None),
         segment_conf_threshold: Optional[float] = Form(None),
         image_file: Optional[UploadFile] = File(None),
@@ -666,6 +702,8 @@ def build_app(manager) -> FastAPI:
                 enable_tiling=enable_tiling,
                 postprocess_mode=postprocess_mode,
                 score_aggregation=score_aggregation,
+                min_anomaly_area=min_anomaly_area,
+                merge_distance_pixels=merge_distance_pixels,
                 use_segmentation=use_segmentation,
                 segment_conf_threshold=segment_conf_threshold,
             )
@@ -739,6 +777,147 @@ def build_app(manager) -> FastAPI:
             return manager.extract_roof_contours(image_path=image_path, image_bytes=image_bytes)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/detect-save")
+    def detect_and_save(request: DetectSaveRequest) -> Dict[str, Any]:
+        try:
+            return manager.detect_and_save_results(
+                model_id=request.model_id,
+                output_dir=request.output_dir,
+                image_path=request.image_path,
+                image_paths=request.image_paths or None,
+                image_dir=request.image_dir,
+                threshold=request.threshold,
+                threshold_percent=request.threshold_percent,
+                use_segmentation=request.use_segmentation,
+                segment_conf_threshold=request.segment_conf_threshold,
+                enable_tiling=request.enable_tiling,
+                postprocess_mode=request.postprocess_mode,
+                score_aggregation=request.score_aggregation,
+                min_anomaly_area=request.min_anomaly_area,
+                merge_distance_pixels=request.merge_distance_pixels,
+                heatmap_zero_below_threshold=request.heatmap_zero_below_threshold,
+                crop_expand_ratio=request.crop_expand_ratio,
+                save_process_files=request.save_process_files,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/detect-save-tasks")
+    def create_detect_and_save_task(request: DetectSaveRequest) -> Dict[str, Any]:
+        task_id = f"detect_save_{uuid.uuid4().hex[:16]}"
+        with _DETECT_SAVE_TASKS_LOCK:
+            _DETECT_SAVE_TASKS[task_id] = {
+                "task_id": task_id,
+                "model_id": request.model_id,
+                "output_dir": request.output_dir,
+                "status": "pending",
+                "progress": 0,
+                "processed": 0,
+                "total": None,
+                "message": "等待开始处理。",
+                "current_image": None,
+                "error": None,
+                "result": None,
+            }
+
+        def run_detect_save() -> None:
+            try:
+                with _DETECT_SAVE_TASKS_LOCK:
+                    task = _DETECT_SAVE_TASKS.get(task_id)
+                    if task is not None:
+                        task["status"] = "running"
+                        task["message"] = "正在准备图片列表..."
+
+                def on_progress(event: Dict[str, Any]) -> None:
+                    stage = event.get("stage")
+                    with _DETECT_SAVE_TASKS_LOCK:
+                        task = _DETECT_SAVE_TASKS.get(task_id)
+                        if task is None:
+                            return
+                        total = event.get("total")
+                        if total is not None:
+                            task["total"] = int(total)
+                        if stage == "detect_save_prepare":
+                            task["message"] = f"共 {int(event.get('total', 0))} 张，准备开始。"
+                            task["progress"] = 0
+                        elif stage == "detect_save_processing":
+                            index = int(event.get("index", 0))
+                            total_value = max(1, int(event.get("total", 1)))
+                            task["processed"] = max(0, index - 1)
+                            task["current_image"] = event.get("image_path")
+                            task["progress"] = min(99, int((max(0, index - 1) * 100) / total_value))
+                            task["message"] = f"正在处理 {index}/{total_value}: {Path(str(event.get('image_path', ''))).name}"
+                        elif stage == "detect_save_item_done":
+                            index = int(event.get("index", 0))
+                            total_value = max(1, int(event.get("total", 1)))
+                            task["processed"] = index
+                            task["current_image"] = event.get("image_path")
+                            task["progress"] = min(99, int(index * 100 / total_value))
+                            task["message"] = f"已完成 {index}/{total_value}: {Path(str(event.get('image_path', ''))).name}"
+                        elif stage == "detect_save_done":
+                            count = int(event.get("count", 0))
+                            task["processed"] = count
+                            task["progress"] = 100
+                            task["message"] = f"处理完成，共 {count} 张。"
+
+                result = manager.detect_and_save_results(
+                    model_id=request.model_id,
+                    output_dir=request.output_dir,
+                    image_path=request.image_path,
+                    image_paths=request.image_paths or None,
+                    image_dir=request.image_dir,
+                    threshold=request.threshold,
+                    threshold_percent=request.threshold_percent,
+                    use_segmentation=request.use_segmentation,
+                    segment_conf_threshold=request.segment_conf_threshold,
+                    enable_tiling=request.enable_tiling,
+                    postprocess_mode=request.postprocess_mode,
+                    score_aggregation=request.score_aggregation,
+                    min_anomaly_area=request.min_anomaly_area,
+                    merge_distance_pixels=request.merge_distance_pixels,
+                    heatmap_zero_below_threshold=request.heatmap_zero_below_threshold,
+                    crop_expand_ratio=request.crop_expand_ratio,
+                    save_process_files=request.save_process_files,
+                    progress_callback=on_progress,
+                )
+                with _DETECT_SAVE_TASKS_LOCK:
+                    task = _DETECT_SAVE_TASKS.get(task_id)
+                    if task is not None:
+                        task["status"] = "completed"
+                        task["progress"] = 100
+                        task["result"] = result
+                        task["message"] = f"处理完成，共 {int(result.get('count', 0))} 张。"
+            except Exception as exc:
+                with _DETECT_SAVE_TASKS_LOCK:
+                    task = _DETECT_SAVE_TASKS.get(task_id)
+                    if task is not None:
+                        task["status"] = "error"
+                        task["error"] = str(exc)
+                        task["message"] = f"处理失败：{exc}"
+
+        threading.Thread(target=run_detect_save, name=f"store-detect-save-{task_id}", daemon=True).start()
+        return {"task_id": task_id, "model_id": request.model_id, "output_dir": request.output_dir}
+
+    @app.get("/api/detect-save-tasks/{task_id}")
+    def get_detect_and_save_task(task_id: str) -> Dict[str, Any]:
+        with _DETECT_SAVE_TASKS_LOCK:
+            task = _DETECT_SAVE_TASKS.get(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail=f"Unknown detect-save task: {task_id}")
+            return {
+                "task_id": task["task_id"],
+                "model_id": task["model_id"],
+                "output_dir": task["output_dir"],
+                "status": task["status"],
+                "progress": task["progress"],
+                "processed": task["processed"],
+                "total": task["total"],
+                "message": task["message"],
+                "current_image": task["current_image"],
+                "error": task["error"],
+                "result": task["result"],
+            }
 
     @app.get("/api/inference/models")
     def list_inference_models() -> Dict[str, Any]:

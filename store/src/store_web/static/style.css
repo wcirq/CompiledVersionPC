@@ -120,6 +120,41 @@ body {
   margin-top: 8px;
 }
 
+.detect-batch-panel {
+  margin-top: 8px;
+}
+
+.detect-module-switch {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-self: start;
+}
+
+.detect-module-button {
+  min-width: 180px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(94, 100, 95, 0.16);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+}
+
+.detect-module-button.active {
+  background: linear-gradient(135deg, #d8895f, #f3c48d);
+  border-color: transparent;
+  color: #1b1f1d;
+}
+
+.detect-module-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.detect-single-panel {
+  margin-top: 4px;
+}
+
 .detect-pipeline-flow {
   display: flex;
   flex-direction: column;
@@ -291,6 +326,35 @@ body {
   color: rgba(248, 244, 236, 0.78);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.transfer-subprogress {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.transfer-subprogress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: rgba(248, 244, 236, 0.88);
+  font-size: 12px;
+}
+
+.transfer-progress-thin {
+  margin-top: 8px;
+  height: 5px;
+}
+
+.transfer-progress-bar-sub {
+  background: linear-gradient(90deg, #76c0b4, #d3efe9);
+}
+
+.transfer-subprogress-message {
+  margin-top: 6px;
+  font-size: 11px;
 }
 
 .train-status-button {
@@ -668,6 +732,25 @@ body {
   justify-content: flex-start;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.detect-batch-grid {
+  align-items: flex-start;
+}
+
+.detect-batch-textarea-field {
+  min-width: min(100%, 420px);
+  flex: 1 1 420px;
+}
+
+.detect-batch-textarea-field textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+}
+
+.detect-batch-action-row {
+  align-self: end;
 }
 
 .append-option-field {

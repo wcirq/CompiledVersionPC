@@ -34,6 +34,16 @@
             <div id="trainTaskBar" class="transfer-progress-bar"></div>
           </div>
           <div id="trainTaskMessage" class="transfer-status-message">等待开始</div>
+          <div id="trainTaskSubprogress" class="transfer-subprogress hidden">
+            <div class="transfer-subprogress-head">
+              <span id="trainTaskSubprogressLabel">阶段进度</span>
+              <span id="trainTaskSubprogressPercent">0%</span>
+            </div>
+            <div class="transfer-progress transfer-progress-thin">
+              <div id="trainTaskSubprogressBar" class="transfer-progress-bar transfer-progress-bar-sub"></div>
+            </div>
+            <div id="trainTaskSubprogressMessage" class="transfer-status-message transfer-subprogress-message">等待开始</div>
+          </div>
           <button id="reopenTrainModalBtn" class="secondary-button train-status-button" type="button">继续查看训练</button>
         </div>
         <div id="modelTransferStatus" class="transfer-status hidden">
@@ -102,15 +112,8 @@
       <section class="panel">
         <div class="panel-head">
           <h2>异物检测</h2>
-          <div id="detectResultMeta" class="append-heatmap-meta">请先选择模型</div>
         </div>
         <div class="stack">
-          <input id="detectImageFile" class="visually-hidden" type="file" accept="image/*">
-          <label id="detectUploadEntry" for="detectImageFile" class="upload-entry-card">
-            <span class="upload-entry-icon" aria-hidden="true">D</span>
-            <span class="upload-entry-title">上传检测图片</span>
-            <span id="detectUploadSubtitle" class="upload-entry-subtitle">请先选择模型</span>
-          </label>
           <div class="append-options-row">
             <label class="append-option-field" for="detectThreshold">
               <span id="detectThresholdLabel">异常度阈值 (%)</span>
@@ -162,22 +165,90 @@
               <input id="detectHeatmapZeroBelowThreshold" type="checkbox" checked>
               <span>阈值以下置零</span>
             </label>
+            <label class="append-check-field" for="detectDrawAnomalyContours">
+              <input id="detectDrawAnomalyContours" type="checkbox" checked>
+              <span>绘制红色异常轮廓</span>
+            </label>
+            <label class="append-option-field" for="detectMinAnomalyArea">
+              <span>最小异常面积</span>
+              <input id="detectMinAnomalyArea" type="number" min="0" step="1" placeholder="留空则使用模型默认值">
+            </label>
+            <label class="append-option-field" for="detectMergeDistancePixels">
+              <span>相邻异物合并距离</span>
+              <input id="detectMergeDistancePixels" type="number" min="0" step="1" placeholder="留空则使用模型默认值">
+            </label>
           </div>
-          <div class="panel subtle-panel detect-pipeline-panel">
-            <div class="panel-head">
-              <h3>检测流程图</h3>
-              <div id="detectPipelineMeta" class="append-heatmap-meta">根据当前参数显示各阶段生效位置</div>
-            </div>
-            <div id="detectPipelineFlow" class="detect-pipeline-flow"></div>
+          <div class="detect-module-switch" role="tablist" aria-label="检测模块切换">
+            <button id="openDetectSingleModuleBtn" class="detect-module-button active" type="button">单图检测</button>
+            <button id="openDetectBatchModuleBtn" class="detect-module-button" type="button">按路径检测并保存</button>
           </div>
-          <div class="detect-result-grid">
-            <div class="detect-result-card">
-              <h3>热力图</h3>
-              <img id="detectHeatmapImage" class="preview-image detect-result-image hidden" alt="检测热力图">
+          <div id="detectSingleModule" class="detect-module-panel">
+            <div class="panel subtle-panel detect-single-panel">
+              <div class="panel-head">
+                <h3>单图检测</h3>
+                <div id="detectResultMeta" class="append-heatmap-meta">请先选择模型</div>
+              </div>
+              <input id="detectImageFile" class="visually-hidden" type="file" accept="image/*">
+              <label id="detectUploadEntry" for="detectImageFile" class="upload-entry-card">
+                <span class="upload-entry-icon" aria-hidden="true">D</span>
+                <span class="upload-entry-title">上传检测图片</span>
+                <span id="detectUploadSubtitle" class="upload-entry-subtitle">请先选择模型</span>
+              </label>
             </div>
-            <div class="detect-result-card">
-              <h3>异常结果框</h3>
-              <img id="detectAnnotatedImage" class="preview-image detect-result-image hidden" alt="检测结果框">
+            <div class="panel subtle-panel detect-pipeline-panel">
+              <div class="panel-head">
+                <h3>检测流程图</h3>
+                <div id="detectPipelineMeta" class="append-heatmap-meta">根据当前参数显示各阶段生效位置</div>
+              </div>
+              <div id="detectPipelineFlow" class="detect-pipeline-flow"></div>
+            </div>
+            <div class="detect-result-grid">
+              <div class="detect-result-card">
+                <h3>热力图</h3>
+                <img id="detectHeatmapImage" class="preview-image detect-result-image hidden" alt="检测热力图">
+              </div>
+              <div class="detect-result-card">
+                <h3>异常结果框</h3>
+                <img id="detectAnnotatedImage" class="preview-image detect-result-image hidden" alt="检测结果框">
+              </div>
+            </div>
+          </div>
+          <div id="detectBatchModule" class="detect-module-panel hidden">
+            <div class="panel subtle-panel detect-batch-panel">
+              <div class="panel-head">
+                <h3>按路径检测并保存结果</h3>
+                <div id="detectSaveResultMeta" class="append-heatmap-meta">复用上方检测参数，批量保存到指定目录</div>
+              </div>
+              <div class="append-options-row detect-batch-grid">
+                <label class="append-option-field" for="detectSaveImagePath">
+                  <span>单张图片路径</span>
+                  <input id="detectSaveImagePath" type="text" placeholder="例如 /data/test.jpg">
+                </label>
+                <label class="append-option-field" for="detectSaveImageDir">
+                  <span>图片目录</span>
+                  <input id="detectSaveImageDir" type="text" placeholder="例如 /data/test_imgs">
+                </label>
+                <label class="append-option-field" for="detectSaveOutputDir">
+                  <span>输出目录</span>
+                  <input id="detectSaveOutputDir" type="text" placeholder="例如 /data/test_imgs_store_results">
+                </label>
+                <label class="append-option-field detect-batch-textarea-field" for="detectSaveImagePaths">
+                  <span>图片路径列表</span>
+                  <textarea id="detectSaveImagePaths" rows="4" placeholder="每行一个路径；与单张路径/目录三选一即可"></textarea>
+                </label>
+                <label class="append-option-field" for="detectSaveCropExpandRatio">
+                  <span>异常裁剪扩张比例</span>
+                  <input id="detectSaveCropExpandRatio" type="number" min="0" step="0.1" value="0.6">
+                </label>
+                <label class="append-check-field" for="detectSaveProcessFiles">
+                  <input id="detectSaveProcessFiles" type="checkbox" checked>
+                  <span>保存热力图和叠加图</span>
+                </label>
+                <div class="inline-option-row detect-batch-action-row">
+                  <button type="button" id="runDetectSaveBtn" class="secondary-button">检测并保存结果</button>
+                </div>
+              </div>
+              <pre id="detectSaveResultJson" class="json-view inference-json">等待批量检测</pre>
             </div>
           </div>
         </div>

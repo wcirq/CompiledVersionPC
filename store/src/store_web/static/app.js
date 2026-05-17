@@ -1,5 +1,6 @@
 const state = {
   activeView: "store",
+  activeDetectModule: "single",
   selectedModelId: null,
   selectedModelThreshold: null,
   selectedModelSampleAssetsAvailable: false,
@@ -18,6 +19,8 @@ const state = {
   inferFile: null,
   appendPreviewUrl: "",
   runtimeOptionsDefaults: null,
+  activeDetectSaveTaskId: null,
+  detectSaveTaskPollTimer: null,
   activeTrainTaskId: null,
   trainTaskPollTimer: null,
   trainTaskAutoSelectDone: false,
@@ -44,6 +47,14 @@ function setActiveView(view) {
   document.getElementById("inferSidebarPanel").classList.toggle("hidden", state.activeView !== "infer");
   document.getElementById("storeWorkbench").classList.toggle("hidden", state.activeView !== "store");
   document.getElementById("inferWorkbench").classList.toggle("hidden", state.activeView !== "infer");
+}
+
+function setActiveDetectModule(mode) {
+  state.activeDetectModule = mode === "batch" ? "batch" : "single";
+  document.getElementById("openDetectSingleModuleBtn").classList.toggle("active", state.activeDetectModule === "single");
+  document.getElementById("openDetectBatchModuleBtn").classList.toggle("active", state.activeDetectModule === "batch");
+  document.getElementById("detectSingleModule").classList.toggle("hidden", state.activeDetectModule !== "single");
+  document.getElementById("detectBatchModule").classList.toggle("hidden", state.activeDetectModule !== "batch");
 }
 
 function formatThresholdLabel(baseLabel, thresholdPercent) {
@@ -246,6 +257,10 @@ function syncDetectConfigFromRuntimeOptions(options = {}) {
   document.getElementById("detectUseSegmentation").checked = Boolean(options.use_segmentation);
   document.getElementById("detectSegmentConfThreshold").value =
     options.segment_conf_threshold == null ? "" : String(options.segment_conf_threshold);
+  document.getElementById("detectMinAnomalyArea").value =
+    options.min_anomaly_area == null ? "" : String(options.min_anomaly_area);
+  document.getElementById("detectMergeDistancePixels").value =
+    options.merge_distance_pixels == null ? "" : String(options.merge_distance_pixels);
   document.getElementById("appendPostprocessMode").value = options.postprocess_mode || "";
   document.getElementById("appendScoreAggregation").value = options.score_aggregation || "";
   document.getElementById("appendEnableTiling").checked = Boolean(options.enable_tiling);
@@ -441,14 +456,18 @@ function refreshDetectEntryState() {
   const subtitle = document.getElementById("detectUploadSubtitle");
   const meta = document.getElementById("detectResultMeta");
   const rerunBtn = document.getElementById("rerunDetectBtn");
+  const saveBtn = document.getElementById("runDetectSaveBtn");
   const enabled = Boolean(state.selectedModelId);
   input.disabled = !enabled;
   rerunBtn.disabled = !enabled;
+  saveBtn.disabled = !enabled;
   entry.classList.toggle("disabled", !enabled);
   subtitle.textContent = enabled
     ? "选择图片后开始异物检测"
     : "请先选择模型";
   if (!enabled) {
+    stopDetectSaveTaskPolling();
+    state.activeDetectSaveTaskId = null;
     meta.textContent = "请先选择模型";
     document.getElementById("modelThresholdInput").value = "";
     document.getElementById("modelThresholdInput").disabled = true;
@@ -466,6 +485,7 @@ function refreshDetectEntryState() {
     state.selectedModelThreshold = null;
     updateThresholdInputs(null);
     renderDetectPipelineFlow();
+    resetDetectSaveResultState("请先选择模型");
   }
 }
 
@@ -574,6 +594,90 @@ function setTrainTaskStatus({ visible = false, title = "训练任务", percent =
   document.getElementById("trainTaskMessage").textContent = message;
 }
 
+function setTrainTaskSubprogress({ visible = false, label = "阶段进度", percent = 0, message = "等待开始" } = {}) {
+  const root = document.getElementById("trainTaskSubprogress");
+  root.classList.toggle("hidden", !visible);
+  if (!visible) {
+    return;
+  }
+  const normalizedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  document.getElementById("trainTaskSubprogressLabel").textContent = label;
+  document.getElementById("trainTaskSubprogressPercent").textContent = `${normalizedPercent.toFixed(0)}%`;
+  document.getElementById("trainTaskSubprogressBar").style.width = `${normalizedPercent}%`;
+  document.getElementById("trainTaskSubprogressMessage").textContent = message;
+}
+
+function describeTrainSubprogress(task) {
+  const events = Array.isArray(task && task.progress_events) ? task.progress_events : [];
+  if (!events.length) {
+    return { visible: false };
+  }
+  const event = events[events.length - 1] || {};
+  const stage = String(event.stage || "");
+  if (stage === "embedding_collect_start") {
+    const totalTiles = Number(event.total_tiles) || 0;
+    return {
+      visible: true,
+      label: "收集向量",
+      percent: 0,
+      message: `准备从 ${totalTiles} 个 tile 收集 embedding`,
+    };
+  }
+  if (stage === "embedding_collect_progress" || stage === "embedding_collect_done") {
+    const processed = Number(event.processed_tiles) || 0;
+    const total = Math.max(1, Number(event.total_tiles) || 1);
+    const sampled = Number(event.sampled_embeddings) || 0;
+    const raw = Number(event.raw_embedding_count) || 0;
+    return {
+      visible: true,
+      label: "收集向量",
+      percent: Math.min(100, (processed * 100) / total),
+      message: `tile ${processed}/${total}，原始向量 ${raw}，抽样后 ${sampled}`,
+    };
+  }
+  if (stage === "tile_sample_start") {
+    const current = Number(event.sample_index) || 0;
+    const total = Math.max(1, Number(event.sample_total) || 1);
+    return {
+      visible: true,
+      label: "切图建样本",
+      percent: Math.min(100, (current * 100) / total),
+      message: `样本 ${current}/${total}: ${event.image || event.sample_id || "-"}`,
+    };
+  }
+  if (stage === "tile_extract_batch") {
+    const batchEnd = Number(event.batch_end) || 0;
+    const cropCount = Math.max(1, Number(event.crop_count) || 1);
+    return {
+      visible: true,
+      label: "切图建样本",
+      percent: Math.min(100, (batchEnd * 100) / cropCount),
+      message: `${event.image || event.sample_id || "-"} 批次 ${batchEnd}/${cropCount}`,
+    };
+  }
+  if (stage === "preprocess_ok" || stage === "preprocess_failed") {
+    const index = Number(event.index) || 0;
+    const total = Math.max(1, Number(event.total) || 1);
+    return {
+      visible: true,
+      label: "训练预处理",
+      percent: Math.min(100, (index * 100) / total),
+      message: `${index}/${total}: ${event.image || "-"}`,
+    };
+  }
+  if (stage === "calibrate_segment_ok" || stage === "calibrate_segment_failed") {
+    const index = Number(event.index) || 0;
+    const total = Math.max(1, Number(event.total) || 1);
+    return {
+      visible: true,
+      label: "校准预处理",
+      percent: Math.min(100, (index * 100) / total),
+      message: `${index}/${total}: ${event.image || "-"}`,
+    };
+  }
+  return { visible: false };
+}
+
 function isElementNearBottom(element, threshold = 24) {
   return (element.scrollHeight - element.scrollTop - element.clientHeight) <= threshold;
 }
@@ -592,6 +696,7 @@ function renderTrainTask(task) {
     reopenButton.disabled = true;
     state.trainLogAutoFollow = true;
     setTrainTaskStatus({ visible: false, percent: 0, message: "等待开始" });
+    setTrainTaskSubprogress({ visible: false });
     return;
   }
   const lines = Array.isArray(task.logs) ? task.logs : [];
@@ -610,6 +715,7 @@ function renderTrainTask(task) {
     percent: task.progress ?? 0,
     message: task.message || "训练中",
   });
+  setTrainTaskSubprogress(describeTrainSubprogress(task));
 }
 
 function stopTrainTaskPolling() {
@@ -762,6 +868,74 @@ function setDetectBusyState(busy) {
   btn.textContent = busy ? "检测中..." : "重新检测";
 }
 
+function setDetectSaveBusyState(busy) {
+  const btn = document.getElementById("runDetectSaveBtn");
+  btn.disabled = busy || !state.selectedModelId;
+  btn.textContent = busy ? "保存中..." : "检测并保存结果";
+}
+
+function parseDetectSaveImagePaths() {
+  return document.getElementById("detectSaveImagePaths").value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function resetDetectSaveResultState(message = "等待批量检测") {
+  document.getElementById("detectSaveResultMeta").textContent = message;
+  document.getElementById("detectSaveResultJson").textContent = "等待批量检测";
+}
+
+function stopDetectSaveTaskPolling() {
+  if (state.detectSaveTaskPollTimer) {
+    window.clearTimeout(state.detectSaveTaskPollTimer);
+    state.detectSaveTaskPollTimer = null;
+  }
+}
+
+function renderDetectSaveTask(task) {
+  if (!task) {
+    resetDetectSaveResultState();
+    return;
+  }
+  const total = Number.isFinite(task.total) ? task.total : null;
+  const processed = Number(task.processed) || 0;
+  const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
+  const currentName = task.current_image ? String(task.current_image).split(/[\\/]/).pop() : "";
+  const progressLabel = total != null ? `${processed}/${total}` : `${processed}`;
+  const currentLabel = currentName ? ` 当前: ${currentName}` : "";
+  document.getElementById("detectSaveResultMeta").textContent =
+    `状态=${task.status} 进度=${progress}% 已处理=${progressLabel}${currentLabel} ${task.message || ""}`;
+  document.getElementById("detectSaveResultJson").textContent = JSON.stringify(task, null, 2);
+  setDetectSaveBusyState(!["completed", "error"].includes(task.status));
+}
+
+async function pollDetectSaveTask(taskId, { immediate = false } = {}) {
+  state.activeDetectSaveTaskId = taskId;
+  stopDetectSaveTaskPolling();
+  const pollOnce = async () => {
+    if (!state.activeDetectSaveTaskId) {
+      return;
+    }
+    const task = await api(`/api/detect-save-tasks/${state.activeDetectSaveTaskId}`);
+    renderDetectSaveTask(task);
+    if (task.status === "completed" || task.status === "error") {
+      return;
+    }
+    state.detectSaveTaskPollTimer = window.setTimeout(() => {
+      pollDetectSaveTask(taskId).catch((error) => {
+        console.error(error);
+        document.getElementById("detectSaveResultMeta").textContent = error.message;
+      });
+    }, 500);
+  };
+  if (immediate) {
+    await pollOnce();
+    return;
+  }
+  await pollOnce();
+}
+
 function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -780,7 +954,7 @@ function loadImageFromUrl(url) {
   });
 }
 
-async function buildAnnotatedDetectImage(file, result) {
+async function buildAnnotatedDetectImage(file, result, options = {}) {
   const img = await loadImageFromFile(file);
   const canvas = document.createElement("canvas");
   canvas.width = img.width;
@@ -796,6 +970,7 @@ async function buildAnnotatedDetectImage(file, result) {
   const fontPaddingY = Math.max(4, Math.round(fontSize * 0.22));
   const labelHeight = fontSize + fontPaddingY * 2;
   const labelOffsetY = Math.max(8, Math.round(fontSize * 0.35));
+  const drawAnomalyContours = options.drawAnomalyContours !== false;
 
   for (const contour of result.roof_contours || []) {
     if (!Array.isArray(contour) || contour.length < 2) continue;
@@ -810,7 +985,7 @@ async function buildAnnotatedDetectImage(file, result) {
 
   (result.anomaly_regions || []).forEach((region, index) => {
     const contour = region.contour || [];
-    if (Array.isArray(contour) && contour.length >= 2) {
+    if (drawAnomalyContours && Array.isArray(contour) && contour.length >= 2) {
       ctx.beginPath();
       ctx.moveTo(contour[0][0], contour[0][1]);
       contour.slice(1).forEach((pt) => ctx.lineTo(pt[0], pt[1]));
@@ -2509,6 +2684,8 @@ async function runDetectImage() {
     const thresholdRaw = document.getElementById("detectThreshold").value.trim();
     const useSegmentation = document.getElementById("detectUseSegmentation").checked;
     const segmentConfThresholdRaw = document.getElementById("detectSegmentConfThreshold").value.trim();
+    const minAnomalyAreaRaw = document.getElementById("detectMinAnomalyArea").value.trim();
+    const mergeDistancePixelsRaw = document.getElementById("detectMergeDistancePixels").value.trim();
     const postprocessMode = document.getElementById("detectPostprocessMode").value;
     const scoreAggregation = document.getElementById("detectScoreAggregation").value;
     const enableTiling = document.getElementById("detectEnableTiling").checked;
@@ -2526,10 +2703,18 @@ async function runDetectImage() {
     if (scoreAggregation !== "") {
       form.append("score_aggregation", scoreAggregation);
     }
+    if (minAnomalyAreaRaw !== "") {
+      form.append("min_anomaly_area", minAnomalyAreaRaw);
+    }
+    if (mergeDistancePixelsRaw !== "") {
+      form.append("merge_distance_pixels", mergeDistancePixelsRaw);
+    }
     form.append("image_file", file);
     const result = await api("/api/detect", { method: "POST", body: form });
     const heatmapUrl = includeHeatmap && result.heatmap_base64 ? `data:image/jpeg;base64,${result.heatmap_base64}` : "";
-    const annotatedUrl = await buildAnnotatedDetectImage(file, result);
+    const annotatedUrl = await buildAnnotatedDetectImage(file, result, {
+      drawAnomalyContours: document.getElementById("detectDrawAnomalyContours").checked,
+    });
     document.getElementById("detectHeatmapImage").src = heatmapUrl;
     document.getElementById("detectHeatmapImage").classList.toggle("hidden", !heatmapUrl);
     document.getElementById("detectAnnotatedImage").src = annotatedUrl;
@@ -2537,6 +2722,91 @@ async function runDetectImage() {
     document.getElementById("detectResultMeta").textContent = formatDetectSummary(result, includeHeatmap);
   } finally {
     setDetectBusyState(false);
+  }
+}
+
+async function runDetectAndSaveResults() {
+  if (!state.selectedModelId) {
+    alert("请先选择模型");
+    return;
+  }
+  const imagePath = document.getElementById("detectSaveImagePath").value.trim();
+  const imageDir = document.getElementById("detectSaveImageDir").value.trim();
+  const outputDir = document.getElementById("detectSaveOutputDir").value.trim();
+  const imagePaths = parseDetectSaveImagePaths();
+  const sourceCount = Number(Boolean(imagePath)) + Number(Boolean(imageDir)) + Number(imagePaths.length > 0);
+  if (sourceCount !== 1) {
+    alert("请在单张图片路径、图片目录、图片路径列表中只填写一种");
+    return;
+  }
+  if (!outputDir) {
+    alert("请填写输出目录");
+    return;
+  }
+
+  const thresholdRaw = document.getElementById("detectThreshold").value.trim();
+  const useSegmentation = document.getElementById("detectUseSegmentation").checked;
+  const segmentConfThresholdRaw = document.getElementById("detectSegmentConfThreshold").value.trim();
+  const minAnomalyAreaRaw = document.getElementById("detectMinAnomalyArea").value.trim();
+  const mergeDistancePixelsRaw = document.getElementById("detectMergeDistancePixels").value.trim();
+  const postprocessMode = document.getElementById("detectPostprocessMode").value;
+  const scoreAggregation = document.getElementById("detectScoreAggregation").value;
+  const enableTiling = document.getElementById("detectEnableTiling").checked;
+  const heatmapZeroBelowThreshold = document.getElementById("detectHeatmapZeroBelowThreshold").checked;
+  const cropExpandRatioRaw = document.getElementById("detectSaveCropExpandRatio").value.trim();
+  const saveProcessFiles = document.getElementById("detectSaveProcessFiles").checked;
+
+  const payload = {
+    model_id: state.selectedModelId,
+    output_dir: outputDir,
+    use_segmentation: useSegmentation,
+    enable_tiling: enableTiling,
+    heatmap_zero_below_threshold: heatmapZeroBelowThreshold,
+    save_process_files: saveProcessFiles,
+  };
+  if (imagePath) {
+    payload.image_path = imagePath;
+  }
+  if (imageDir) {
+    payload.image_dir = imageDir;
+  }
+  if (imagePaths.length) {
+    payload.image_paths = imagePaths;
+  }
+  if (thresholdRaw !== "") {
+    payload.threshold_percent = Number(thresholdRaw);
+  }
+  if (segmentConfThresholdRaw !== "") {
+    payload.segment_conf_threshold = Number(segmentConfThresholdRaw);
+  }
+  if (postprocessMode !== "") {
+    payload.postprocess_mode = postprocessMode;
+  }
+  if (scoreAggregation !== "") {
+    payload.score_aggregation = scoreAggregation;
+  }
+  if (minAnomalyAreaRaw !== "") {
+    payload.min_anomaly_area = Number(minAnomalyAreaRaw);
+  }
+  if (mergeDistancePixelsRaw !== "") {
+    payload.merge_distance_pixels = Number(mergeDistancePixelsRaw);
+  }
+  if (cropExpandRatioRaw !== "") {
+    payload.crop_expand_ratio = Number(cropExpandRatioRaw);
+  }
+
+  resetDetectSaveResultState("批量检测保存中...");
+  setDetectSaveBusyState(true);
+  try {
+    const task = await api("/api/detect-save-tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await pollDetectSaveTask(task.task_id, { immediate: true });
+  } catch (error) {
+    setDetectSaveBusyState(false);
+    throw error;
   }
 }
 
@@ -2604,12 +2874,30 @@ async function autoExtractForAppend() {
   }
   state.appendFile = file;
   openModal("appendModal");
-  setAppendHeatmapState({ message: "YOLO 轮廓提取完成后开始异常检测..." });
-  const form = new FormData();
-  form.append("image_file", file);
-  const data = await api("/api/extract-contours", { method: "POST", body: form });
-  await state.appendEditor.loadImageFromUrl(URL.createObjectURL(file));
-  state.appendEditor.setPolygonEntries((data.items || []).map((item) => ({ points: item.contour, kind: "yolo" })));
+  const appendUseSegmentation = document.getElementById("appendUseSegmentation").checked;
+  const imageUrl = URL.createObjectURL(file);
+  await state.appendEditor.loadImageFromUrl(imageUrl);
+  if (appendUseSegmentation) {
+    setAppendHeatmapState({ message: "YOLO 轮廓提取完成后开始异常检测..." });
+    const form = new FormData();
+    form.append("image_file", file);
+    const data = await api("/api/extract-contours", { method: "POST", body: form });
+    state.appendEditor.setPolygonEntries((data.items || []).map((item) => ({ points: item.contour, kind: "yolo" })));
+  } else {
+    setAppendHeatmapState({ message: "当前未使用分割模型，直接使用整图范围。" });
+    const image = state.appendEditor.image;
+    const width = Math.max(1, Math.round(image ? image.naturalWidth || image.width : 0));
+    const height = Math.max(1, Math.round(image ? image.naturalHeight || image.height : 0));
+    state.appendEditor.setPolygonEntries([{
+      points: [
+        [0, 0],
+        [width - 1, 0],
+        [width - 1, height - 1],
+        [0, height - 1],
+      ],
+      kind: "manual",
+    }]);
+  }
   updateAppendPreview();
 
   const detectForm = new FormData();
@@ -2624,8 +2912,9 @@ async function autoExtractForAppend() {
     document.getElementById("appendHeatmapZeroBelowThreshold").checked ? "true" : "false",
   );
   const appendThresholdRaw = document.getElementById("appendThreshold").value.trim();
-  const appendUseSegmentation = document.getElementById("appendUseSegmentation").checked;
   const appendSegmentConfThresholdRaw = document.getElementById("appendSegmentConfThreshold").value.trim();
+  const minAnomalyAreaRaw = document.getElementById("detectMinAnomalyArea").value.trim();
+  const mergeDistancePixelsRaw = document.getElementById("detectMergeDistancePixels").value.trim();
   const appendPostprocessMode = document.getElementById("appendPostprocessMode").value;
   const appendScoreAggregation = document.getElementById("appendScoreAggregation").value;
   const appendEnableTiling = document.getElementById("appendEnableTiling").checked;
@@ -2639,6 +2928,12 @@ async function autoExtractForAppend() {
   }
   if (appendScoreAggregation !== "") {
     detectForm.append("score_aggregation", appendScoreAggregation);
+  }
+  if (minAnomalyAreaRaw !== "") {
+    detectForm.append("min_anomaly_area", minAnomalyAreaRaw);
+  }
+  if (mergeDistancePixelsRaw !== "") {
+    detectForm.append("merge_distance_pixels", mergeDistancePixelsRaw);
   }
   detectForm.append("image_file", file);
   const detectData = await api("/api/detect", { method: "POST", body: detectForm });
@@ -2744,6 +3039,8 @@ document.getElementById("trainTaskStatus").onclick = async () => {
 };
 document.getElementById("openStoreViewBtn").onclick = () => setActiveView("store");
 document.getElementById("openInferViewBtn").onclick = () => setActiveView("infer");
+document.getElementById("openDetectSingleModuleBtn").onclick = () => setActiveDetectModule("single");
+document.getElementById("openDetectBatchModuleBtn").onclick = () => setActiveDetectModule("batch");
 document.getElementById("openSamplesBtn").onclick = async () => {
   if (!state.selectedModelId) {
     alert("请先选择模型");
@@ -2785,6 +3082,7 @@ document.getElementById("inferImageFile").addEventListener("change", async (even
   }
 });
 document.getElementById("rerunDetectBtn").onclick = runDetectImage;
+document.getElementById("runDetectSaveBtn").onclick = runDetectAndSaveResults;
 document.getElementById("rerunInferenceBtn").onclick = runInferenceImage;
 document.getElementById("saveModelThresholdBtn").onclick = saveModelThreshold;
 document.getElementById("deleteModelBtn").onclick = deleteCurrentModel;
@@ -3047,6 +3345,7 @@ state.appendEditor = createAppendRectEditor("appendEditorCanvas", "appendContour
 });
 state.updateEditor = createPolygonEditor("updateCanvas", "updateContour");
 setActiveView("store");
+setActiveDetectModule("single");
 refreshAppendEntryState();
 refreshDetectEntryState();
 refreshSamplesEntryState();
@@ -3055,6 +3354,7 @@ refreshModelThresholdEditor();
 refreshModelTransferActions();
 setAppendHeatmapState();
 resetDetectResultState();
+resetDetectSaveResultState();
 resetInferenceResultState();
 renderTrainTask(null);
 setDetectBusyState(false);

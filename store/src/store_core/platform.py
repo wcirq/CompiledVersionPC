@@ -93,6 +93,8 @@ class TrainRoofAnomalyStore:
         enable_tiling: Optional[bool] = None,
         postprocess_mode: Optional[str] = None,
         score_aggregation: Optional[str] = None,
+        min_anomaly_area: Optional[int] = None,
+        merge_distance_pixels: Optional[int] = None,
         use_segmentation: Optional[bool] = None,
         segment_conf_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -109,12 +111,56 @@ class TrainRoofAnomalyStore:
             enable_tiling=enable_tiling,
             postprocess_mode=postprocess_mode,
             score_aggregation=score_aggregation,
+            min_anomaly_area=min_anomaly_area,
+            merge_distance_pixels=merge_distance_pixels,
             use_segmentation=use_segmentation,
             segment_conf_threshold=segment_conf_threshold,
         )
 
     def list_models(self) -> Dict[str, Any]:
         return {"items": self.manager.list_models()}
+
+    def detect_and_save_results(
+        self,
+        model_id: str,
+        output_dir: str,
+        image_path: Optional[str] = None,
+        image_paths: Optional[Sequence[str]] = None,
+        image_dir: Optional[str] = None,
+        threshold: Optional[float] = None,
+        threshold_percent: Optional[float] = None,
+        use_segmentation: Optional[bool] = None,
+        segment_conf_threshold: Optional[float] = None,
+        enable_tiling: Optional[bool] = None,
+        postprocess_mode: Optional[str] = None,
+        score_aggregation: Optional[str] = None,
+        min_anomaly_area: Optional[int] = None,
+        merge_distance_pixels: Optional[int] = None,
+        heatmap_zero_below_threshold: Optional[bool] = None,
+        crop_expand_ratio: float = 0.6,
+        save_process_files: bool = True,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        return self.manager.detect_and_save_results(
+            model_id=model_id,
+            output_dir=output_dir,
+            image_path=image_path,
+            image_paths=image_paths,
+            image_dir=image_dir,
+            threshold=threshold,
+            threshold_percent=threshold_percent,
+            use_segmentation=use_segmentation,
+            segment_conf_threshold=segment_conf_threshold,
+            enable_tiling=enable_tiling,
+            postprocess_mode=postprocess_mode,
+            score_aggregation=score_aggregation,
+            min_anomaly_area=min_anomaly_area,
+            merge_distance_pixels=merge_distance_pixels,
+            heatmap_zero_below_threshold=heatmap_zero_below_threshold,
+            crop_expand_ratio=crop_expand_ratio,
+            save_process_files=save_process_files,
+            progress_callback=progress_callback,
+        )
 
     def get_model(self, model_id: str) -> Dict[str, Any]:
         return self.manager.get_model(model_id)
